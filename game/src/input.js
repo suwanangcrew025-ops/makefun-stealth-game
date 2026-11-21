@@ -1,84 +1,116 @@
-// Vesper Vault — input: keyboard and mouse reduced to plain structs.
-// The world reads one struct per fixed step, so a recording, a bot or a
-// screenshot staging can drive the same update the player does.
+// Vesper Vault — input: keyboard and mouse reduced to one plain struct
+// the world steps from. Keys are held state; Enter is an edge (menu
+// presses); a mouse click is a one-shot coin target. The world alone
+// clears the coin target after it consumes it, so a menu key can never
+// swallow a throw.
 
 export function createInput() {
   return {
-    // Held keys.
-    keys: new Set(),
-    // Movement vector for this step, -1..1 on each axis.
-    mx: 0,
-    my: 0,
+    up: false,
+    down: false,
+    left: false,
+    right: false,
     sneak: false,
     sprint: false,
-    // A coin-toss target in canvas pixels, consumed once by the world.
-    coinTarget: null,
-    // Edge-triggered actions, consumed once by the boot layer.
-    pressedEnter: false,
-    pressedPause: false,
-    pressedRestart: false,
-    pressedMute: false,
+    menuPressed: false,
+    restartPressed: false,
+    pausePressed: false,
+    mutePressed: false,
+    pendingCoin: null,
+    _keys: new Set(),
   };
 }
 
-const MOVE_KEYS = {
-  KeyW: [0, -1],
-  ArrowUp: [0, -1],
-  KeyS: [0, 1],
-  ArrowDown: [0, 1],
-  KeyA: [-1, 0],
-  ArrowLeft: [-1, 0],
-  KeyD: [1, 0],
-  ArrowRight: [1, 0],
+export function inputAxes(input) {
+  let ax = 0;
+  let ay = 0;
+  if (input.left) ax -= 1;
+  if (input.right) ax += 1;
+  if (input.up) ay -= 1;
+  if (input.down) ay += 1;
+  return { ax, ay };
+}
+
+// The struct the world steps from: the source input itself, with the
+// axes attached. It is the SAME object the world clears the coin
+// target on, so a throw is consumed exactly once: the world sets
+// pendingCoin to null on this object after the throw is set up, and
+// the menu handler never touches it.
+export function inputForWorld(input) {
+  const { ax, ay } = inputAxes(input);
+  input.ax = ax;
+  input.ay = ay;
+  return input;
+}
+
+const KEY_MAP = {
+  KeyW: 'up',
+  ArrowUp: 'up',
+  KeyS: 'down',
+  ArrowDown: 'down',
+  KeyA: 'left',
+  ArrowLeft: 'left',
+  KeyD: 'right',
+  ArrowRight: 'right',
+  KeyC: 'sneak',
+  ControlLeft: 'sneak',
+  ControlRight: 'sneak',
+  ShiftLeft: 'sprint',
+  ShiftRight: 'sprint',
 };
 
-export function keyDown(input, code) {
-  if (MOVE_KEYS[code]) input.keys.add(code);
-  if (code === 'KeyC' || code === 'ControlLeft' || code === 'ControlRight') input.keys.add(code);
-  if (code === 'ShiftLeft' || code === 'ShiftRight') input.keys.add(code);
-  if (code === 'Enter') input.pressedEnter = true;
-  if (code === 'KeyP') input.pressedPause = true;
-  if (code === 'KeyR') input.pressedRestart = true;
-  if (code === 'KeyM') input.pressedMute = true;
-  refresh(input);
-}
-
-export function keyUp(input, code) {
-  input.keys.delete(code);
-  refresh(input);
-}
-
-function refresh(input) {
-  let mx = 0;
-  let my = 0;
-  for (const code of input.keys) {
-    const v = MOVE_KEYS[code];
-    if (v) {
-      mx += v[0];
-      my += v[1];
+// Wire a canvas to the input struct. Safe to call where there is no
+// document (a Node test imports this module without attaching it).
+export function attachInput(input, canvas) {
+  if (typeof document === 'undefined' || !canvas) return;
+  document.addEventListener('keydown', (event) => {
+    const field = KEY_MAP[event.code];
+    if (field) {
+      input[field] = true;
+      input._keys.add(event.code);
+      event.preventDefault();
+      return;
     }
-  }
-  input.mx = Math.sign(mx);
-  input.my = Math.sign(my);
-  input.sneak = input.keys.has('KeyC') || input.keys.has('ControlLeft') || input.keys.has('ControlRight');
-  input.sprint = input.keys.has('ShiftLeft') || input.keys.has('ShiftRight');
+    if (event.code === 'Enter' && !event.repeat) input.menuPressed = true;
+    if (event.code === 'KeyR' && !event.repeat) input.restartPressed = true;
+    if (event.code === 'KeyP' && !event.repeat) input.pausePressed = true;
+    if (event.code === 'KeyM' && !event.repeat) input.mutePressed = true;
+    if (event.code === 'Space') event.preventDefault();
+  });
+  document.addEventListener('keyup', (event) => {
+    const field = KEY_MAP[event.code];
+    if (field) {
+      input._keys.delete(event.code);
+      // A held key only releases when every code mapped to it is up.
+      let stillHeld = false;
+      for (const code of input._keys) {
+        if (KEY_MAP[code] === field) stillHeld = true;
+      }
+      input[field] = stillHeld;
+    }
+  });
+  canvas.addEventListener('mousedown', (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    input.pendingCoin = {
+      x: (event.clientX - rect.left) * scaleX,
+      y: (event.clientY - rect.top) * scaleY,
+    };
+  });
+  window.addEventListener('blur', () => {
+    input.up = input.down = input.left = input.right = false;
+    input.sneak = false;
+    input.sprint = false;
+    input._keys.clear();
+  });
 }
 
-export function mouseClick(input, x, y) {
-  input.coinTarget = { x, y };
-}
-
-// Clear the one-shot fields after the world has consumed them. The coin
-// target is cleared here only: the menu keys are cleared by handleMenuKeys
-// before the update, so a click between frames is never wiped unseen.
-export function consumeActions(input) {
-  input.coinTarget = null;
-}
-
-// Clear only the edge-triggered menu keys.
-export function consumeMenuKeys(input) {
-  input.pressedEnter = false;
-  input.pressedPause = false;
-  input.pressedRestart = false;
-  input.pressedMute = false;
+// Menu edges are consumed by the main loop and cleared here, one at a
+// time, after handling — never the coin target, which the world owns.
+export function clearMenuEdges(input) {
+  input.menuPressed = false;
+  input.restartPressed = false;
+  input.pausePressed = false;
+  input.mutePressed = false;
 }

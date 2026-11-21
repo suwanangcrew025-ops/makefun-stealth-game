@@ -1,140 +1,91 @@
 // Vesper Vault — boot: the fixed-step loop, menu keys and wiring.
-// The world advances in 1/60s steps driven by accumulated real time, so
-// the simulation never depends on the frame rate. A `?shot=` query stages
-// one screenshot deterministically instead of starting the live game.
-// The window handle below is the play-testing hook: it exposes the world,
-// the input and a way to step the simulation by hand.
+// With ?shot= in the URL the game stages one screenshot deterministically
+// instead of playing; otherwise it runs the live game. A read handle is
+// exposed for play-testing: window.__vesper carries the world, the input
+// and the shot-ready flag.
 
-import { STEP, VIEW_W, VIEW_H } from './config.js';
-import { World } from './world.js';
-import { render } from './render.js';
-import { createInput, keyDown, keyUp, mouseClick, consumeActions, consumeMenuKeys } from './input.js';
-import { createAudio, resumeAudio, setMuted, drainSounds, updateAudioBed, playSound } from './audio.js';
-import { stageShot } from './shots.js';
+import { STEP, VIEW_H, VIEW_W } from './config.js';
+import { attachInput, clearMenuEdges, createInput, inputForWorld } from './input.js';
+import { advanceMenu, createWorld, resetFloor, stepWorld } from './world.js';
+import { drawWorld } from './render.js';
+import { createAudio, playSounds, toggleMute, unlockAudio, updateAudioBed } from './audio.js';
+import { runShot } from './shots.js';
 
 const canvas = document.getElementById('game');
-const statusEl = document.getElementById('status');
 const ctx = canvas.getContext('2d');
-
-const world = new World();
+const statusEl = document.getElementById('status');
 const input = createInput();
 const audio = createAudio();
-
-let lastStatus = '';
-function syncStatus() {
-  if (world.statusMessage !== lastStatus) {
-    lastStatus = world.statusMessage;
-    statusEl.textContent = lastStatus;
-  }
-}
-
-function handleMenuKeys() {
-  if (input.pressedEnter) {
-    resumeAudio(audio);
-    if (world.state === 'title') {
-      world.startGame();
-      playUiClick();
-    } else if (world.state === 'brief') {
-      world.beginFloor();
-      playUiClick();
-    } else if (world.state === 'clear') {
-      world.nextFloor();
-      playUiClick();
-    } else if (world.state === 'victory') {
-      world.startGame();
-      playUiClick();
-    } else if (world.state === 'caught') {
-      world.retryFloor();
-      playUiClick();
-    }
-  }
-  if (input.pressedPause && world.state === 'play') {
-    world.paused = !world.paused;
-    world.setStatus(world.paused ? 'Paused. The museum holds its breath.' : 'Back to the dark.');
-    playUiClick();
-  }
-  if (input.pressedRestart && (world.state === 'play' || world.state === 'caught')) {
-    world.retryFloor();
-    playUiClick();
-  }
-  if (input.pressedMute) {
-    setMuted(audio, !audio.muted);
-    world.setStatus(audio.muted ? 'Sound off.' : 'Sound on.');
-  }
-  consumeMenuKeys(input);
-}
-
-function playUiClick() {
-  playSound(audio, { name: 'uiClick' });
-}
-
-window.addEventListener('keydown', (event) => {
-  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) {
-    event.preventDefault();
-  }
-  keyDown(input, event.code);
-});
-
-window.addEventListener('keyup', (event) => {
-  keyUp(input, event.code);
-});
-
-canvas.addEventListener('mousedown', (event) => {
-  resumeAudio(audio);
-  const rect = canvas.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / rect.width) * VIEW_W;
-  const y = ((event.clientY - rect.top) / rect.height) * VIEW_H;
-  mouseClick(input, x, y);
-});
-
-// The play-testing handle: read the world, drive it by hand, and stage
-// shots without the live loop.
-window.__vesper = {
-  world,
-  input,
-  step(dt = STEP) {
-    handleMenuKeys();
-    world.update(dt, input);
-    consumeActions(input);
-    syncStatus();
-  },
-  render(time = 0) {
-    render(ctx, world, time);
-  },
-  stageShot(name) {
-    return stageShot(world, name);
-  },
-};
+attachInput(input, canvas);
 
 const params = new URLSearchParams(window.location.search);
 const shotName = params.get('shot');
+
+window.__vesper = { world: null, input, audio, shotName, shotReady: false, shotState: null };
+
+function syncStatus(world) {
+  if (world.statusDirty && statusEl) {
+    statusEl.textContent = world.status;
+    world.statusDirty = false;
+  }
+}
+
+function handleMenuKeys(world) {
+  if (input.menuPressed) {
+    advanceMenu(world);
+    input.menuPressed = false;
+  }
+  if (input.restartPressed) {
+    if (world.screen === 'play' || world.screen === 'caught') resetFloor(world);
+    input.restartPressed = false;
+  }
+  if (input.pausePressed) {
+    if (world.screen === 'play') world.screen = 'pause';
+    else if (world.screen === 'pause') world.screen = 'play';
+    input.pausePressed = false;
+  }
+  if (input.mutePressed) {
+    toggleMute(audio);
+    input.mutePressed = false;
+  }
+}
+
 if (shotName) {
-  // Screenshot mode: stage deterministically, draw one frame, flag ready.
-  stageShot(world, shotName);
-  render(ctx, world, 0);
-  syncStatus();
-  window.__shotReady = true;
+  // Screenshot staging: run the sim to its mark, draw one frame, flag ready.
+  const { world, state } = runShot(shotName);
+  window.__vesper.world = world;
+  window.__vesper.shotState = state;
+  drawWorld(ctx, world);
+  syncStatus(world);
+  window.__vesper.shotReady = true;
 } else {
-  // Live mode: accumulate real time and step the world in fixed units.
+  const world = createWorld(0);
+  window.__vesper.world = world;
+  document.addEventListener('keydown', () => unlockAudio(audio), { once: true });
+  canvas.addEventListener('mousedown', () => unlockAudio(audio), { once: true });
+
   let last = performance.now();
-  let acc = 0;
+  let accumulator = 0;
   function frame(now) {
-    const elapsed = Math.min((now - last) / 1000, 0.25);
+    const elapsed = Math.min(0.25, (now - last) / 1000);
     last = now;
-    acc += elapsed;
-    handleMenuKeys();
-    let n = 0;
-    while (acc >= STEP && n < 5) {
-      world.update(STEP, input);
-      acc -= STEP;
-      n++;
+    accumulator += elapsed;
+    let steps = 0;
+    while (accumulator >= STEP && steps < 5) {
+      handleMenuKeys(world);
+      stepWorld(world, inputForWorld(input), STEP);
+      accumulator -= STEP;
+      steps += 1;
     }
-    if (n === 5) acc = 0;
-    consumeActions(input);
-    drainSounds(audio, world);
+    if (steps === 5) accumulator = 0;
+    // Menu edges are cleared here, after the world step — and the coin
+    // target is never cleared here at all: the world clears it itself
+    // once it has consumed the throw.
+    clearMenuEdges(input);
+    playSounds(audio, world.sounds.splice(0));
     updateAudioBed(audio, world, elapsed);
-    render(ctx, world, now / 1000);
-    syncStatus();
+    drawWorld(ctx, world);
+    syncStatus(world);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);

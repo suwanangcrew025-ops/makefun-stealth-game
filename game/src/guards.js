@@ -1,218 +1,234 @@
 // Vesper Vault — guards: creation, the vision test and the five-mood
-// machine (patrol, suspect, search, chase, return). A guard never decides
-// alone: the world feeds it what it sees and hears, and it answers with
-// where it walks and where it looks.
+// machine (patrol, suspect, search, chase, return).
+// A guard never decides anything on its own about the alarm: the world
+// computes the shared meter and hands each guard its seeing rate, and
+// the guard only walks its own mood.
 
 import {
-  GUARD_RADIUS,
-  GUARD_SPEED,
-  VISION_RANGE,
-  VISION_HALF_ANGLE,
-  SNEAK_VISION_FACTOR,
-  DETECT_BASE_RATE,
+  ALARM_SEARCH,
+  ALARM_SUSPECT,
+  CHASE_LOSE_TIME,
+  DETECT_BASE,
   DETECT_MIN_FACTOR,
-  DARK_EXPOSURE,
+  EXPOSURE_DARK,
+  EXPOSURE_LIT,
+  GUARD_CHASE,
+  GUARD_PATROL,
+  GUARD_RETURN,
+  GUARD_SEARCH,
+  LAMP_RADIUS,
+  SEARCH_SWEEP_TIME,
+  SNEAK_VISION_FACTOR,
+  SUSPECT_STARE_TIME,
+  SWEEP_HALF_ANGLE,
+  VISION_HALF_ANGLE,
+  VISION_POINT_BLANK,
+  VISION_RANGE,
 } from './config.js';
-import { angleDiff, clamp, dist, lineOfSight, moveCircle, turnToward } from './geometry.js';
-import { tileCenter } from './levels.js';
+import { angleDiff, losClear, stepToward, tileCenter } from './geometry.js';
 
 export function createGuard(def, index) {
   const start = tileCenter(def.waypoints[0][0], def.waypoints[0][1]);
-  const next = def.waypoints[1] ?? def.waypoints[0];
-  const n2 = tileCenter(next[0], next[1]);
+  const next = tileCenter(def.waypoints[1][0], def.waypoints[1][1]);
   return {
     id: index,
     x: start.x,
     y: start.y,
-    radius: GUARD_RADIUS,
-    // Facing starts along the first patrol leg.
-    facing: Math.atan2(n2.y - start.y, n2.x - start.x),
+    facing: Math.atan2(next.y - start.y, next.x - start.x),
+    waypoints: def.waypoints,
+    pause: def.pause,
+    wp: 0,
     mood: 'patrol',
-    waypointIndex: 1 % def.waypoints.length,
     pauseLeft: 0,
-    pauseTotal: def.pause,
-    sweepBase: 0,
-    sweepTime: 0,
-    // A suspect/search/chase target, in world pixels.
-    targetX: start.x,
-    targetY: start.y,
-    searchTime: 0,
-    lastSeenX: start.x,
-    lastSeenY: start.y,
-    lostTime: 0,
+    sweepBase: Math.atan2(next.y - start.y, next.x - start.x),
+    sweepT: 0,
+    stimulus: null,
+    stareT: 0,
+    sweepLeft: 0,
+    loseT: 0,
+    seeRate: 0,
     seesPlayer: false,
-    // How strongly this guard is filling the alarm right now.
-    fillRate: 0,
-    // Footstep cadence for the positional audio bed.
-    stepTimer: 0,
-    moving: false,
   };
 }
 
-// Can this guard see the player from where it stands? The cone is range,
-// half-angle and line of sight; sneaking shrinks the range to 70%.
-// Returns the fill rate (0 when the player is unseen).
-export function visionTest(guard, player, exposure, solids) {
-  const d = dist(guard.x, guard.y, player.x, player.y);
-  const range = VISION_RANGE * (player.sneaking ? SNEAK_VISION_FACTOR : 1);
+function guardTarget(g) {
+  const wp = g.waypoints[(g.wp + 1) % g.waypoints.length];
+  return tileCenter(wp[0], wp[1]);
+}
+
+// How lit is the thief standing at (x, y)? Full light inside a lamp
+// pool, mostly hidden anywhere else.
+export function exposureAt(world, x, y) {
+  for (const lamp of world.lamps) {
+    const dx = x - lamp.x;
+    const dy = y - lamp.y;
+    if (dx * dx + dy * dy < LAMP_RADIUS * LAMP_RADIUS) return EXPOSURE_LIT;
+  }
+  return EXPOSURE_DARK;
+}
+
+// The vision test, in the guard's favour only where the rules say so:
+// inside the cone and with a clear line of sight, or within 30px
+// (point blank) whatever way the guard faces — still needing line of
+// sight. The fill scales with proximity and with the light the thief
+// stands in, and crouching shrinks the range.
+export function visionRate(guard, world) {
+  const p = world.player;
+  const dx = p.x - guard.x;
+  const dy = p.y - guard.y;
+  const d = Math.hypot(dx, dy);
+  let range = VISION_RANGE;
+  if (p.gait === 'sneak') range *= SNEAK_VISION_FACTOR;
   if (d > range) return 0;
-  if (!lineOfSight(guard.x, guard.y, player.x, player.y, solids)) return 0;
-  // Arm's length: a guard feels the player there whatever way it faces.
-  if (d < 30) return DETECT_BASE_RATE * exposure;
-  const toPlayer = Math.atan2(player.y - guard.y, player.x - guard.x);
-  if (Math.abs(angleDiff(guard.facing, toPlayer)) > VISION_HALF_ANGLE) return 0;
-  const closeness = 1 - d / range;
-  const strength = DETECT_MIN_FACTOR + (1 - DETECT_MIN_FACTOR) * closeness;
-  return DETECT_BASE_RATE * strength * exposure;
+  if (d > VISION_POINT_BLANK) {
+    const toPlayer = Math.atan2(dy, dx);
+    if (Math.abs(angleDiff(toPlayer, guard.facing)) > VISION_HALF_ANGLE) return 0;
+  }
+  if (!losClear(world.grid, guard.x, guard.y, p.x, p.y)) return 0;
+  const proximity = d <= VISION_POINT_BLANK ? 1 : Math.max(DETECT_MIN_FACTOR, 1 - 0.75 * (d / range));
+  return DETECT_BASE * proximity * exposureAt(world, p.x, p.y);
 }
 
-// Walk toward (tx, ty) at `speed`, sliding along walls. Returns true when
-// the guard arrived within 6px of the target.
-export function walkToward(guard, tx, ty, speed, dt, solids) {
-  const d = dist(guard.x, guard.y, tx, ty);
-  if (d < 6) return true;
-  const step = Math.min(speed * dt, d);
-  const nx = guard.x + ((tx - guard.x) / d) * step;
-  const ny = guard.y + ((ty - guard.y) / d) * step;
-  const moved = moveCircle(guard.x, guard.y, nx - guard.x, ny - guard.y, guard.radius, solids);
-  const before = dist(guard.x, guard.y, tx, ty);
-  guard.x = moved.x;
-  guard.y = moved.y;
-  guard.moving = dist(guard.x, guard.y, tx, ty) < before - 0.01;
-  // Face the direction of travel while walking.
-  const want = Math.atan2(ty - guard.y, tx - guard.x);
-  guard.facing = turnToward(guard.facing, want, 7 * dt);
-  return dist(guard.x, guard.y, tx, ty) < 6;
+function arriveAtWaypoint(g, world) {
+  g.wp = (g.wp + 1) % g.waypoints.length;
+  g.pauseLeft = g.pause;
+  g.sweepT = 0;
+  // The sweep fans around the direction the guard was travelling.
+  g.sweepBase = g.facing;
 }
 
-// One fixed step of the mood machine. `sense` carries what the world
-// worked out this step: whether the guard sees the player, where the
-// player was heard, and the shared alarm level.
-export function updateGuard(guard, def, dt, solids, sense) {
-  const wps = def.waypoints;
-  const wp = (i) => tileCenter(wps[i][0], wps[i][1]);
+// One fixed step of the mood machine. `world` carries the alarm, the
+// last known position and the grid; the guard only moves itself.
+export function updateGuard(g, world, dt) {
+  const sees = g.seesPlayer;
 
-  // Hearing: a noise the guard is in earshot of becomes a search target,
-  // unless the guard is already chasing.
-  if (sense.heard && guard.mood !== 'chase') {
-    guard.targetX = sense.heard.x;
-    guard.targetY = sense.heard.y;
-    if (guard.mood === 'patrol' || guard.mood === 'return') {
-      guard.mood = 'search';
-      guard.searchTime = 0;
+  if (g.mood === 'chase') {
+    if (sees) {
+      g.loseT = 0;
+      world.lastKnown = { x: world.player.x, y: world.player.y };
+    } else {
+      g.loseT += dt;
     }
-  }
-  // A walking player heard up close only makes a patrolling guard suspect.
-  if (sense.suspected && guard.mood === 'patrol') {
-    guard.mood = 'suspect';
-    guard.targetX = sense.suspected.x;
-    guard.targetY = sense.suspected.y;
-    guard.sweepTime = 0;
+    if (g.loseT > CHASE_LOSE_TIME) {
+      g.mood = 'search';
+      g.stimulus = { ...world.lastKnown };
+      g.sweepLeft = 0;
+      g.loseT = 0;
+      return;
+    }
+    const moved = stepToward(world.grid, g.x, g.y, 13, world.player.x, world.player.y, GUARD_CHASE, dt);
+    if (moved.moved > 0) {
+      g.facing = Math.atan2(world.player.y - g.y, world.player.x - g.x);
+    }
+    g.x = moved.x;
+    g.y = moved.y;
+    return;
   }
 
-  switch (guard.mood) {
-    case 'patrol': {
-      if (guard.pauseLeft > 0) {
-        // Paused at a waypoint: sweep the facing around the travel direction.
-        guard.pauseLeft -= dt;
-        guard.sweepTime += dt;
-        const sweep = Math.sin((guard.sweepTime / Math.max(guard.pauseTotal, 0.1)) * Math.PI * 2) * 0.54;
-        guard.facing = guard.sweepBase + sweep;
-        guard.moving = false;
-        if (guard.pauseLeft <= 0) {
-          guard.waypointIndex = (guard.waypointIndex + 1) % wps.length;
-        }
-        break;
-      }
-      const t = wp(guard.waypointIndex);
-      if (walkToward(guard, t.x, t.y, GUARD_SPEED.patrol, dt, solids)) {
-        guard.pauseLeft = def.pause;
-        guard.pauseTotal = def.pause;
-        guard.sweepTime = 0;
-        // Sweep around the direction the guard was travelling.
-        const next = wp((guard.waypointIndex + 1) % wps.length);
-        guard.sweepBase = Math.atan2(next.y - t.y, next.x - t.x);
-      }
-      break;
+  if (g.mood === 'suspect') {
+    // Rooted, staring at the stimulus. A fresh sighting refreshes the
+    // stare; a long quiet spell sends the guard to look, or home.
+    if (sees) {
+      g.stareT = SUSPECT_STARE_TIME;
+      g.facing = Math.atan2(world.player.y - g.y, world.player.x - g.x);
+      world.lastKnown = { x: world.player.x, y: world.player.y };
+    } else if (g.stimulus) {
+      g.facing = Math.atan2(g.stimulus.y - g.y, g.stimulus.x - g.x);
     }
-    case 'suspect': {
-      // Rooted, staring at the stimulus. A long stare that sees nothing
-      // gives up and returns to the patrol.
-      guard.moving = false;
-      const want = Math.atan2(guard.targetY - guard.y, guard.targetX - guard.x);
-      guard.facing = turnToward(guard.facing, want, 5 * dt);
-      guard.sweepTime += dt;
-      if (guard.sweepTime > 2.6) {
-        guard.mood = 'return';
-      }
-      break;
+    g.stareT -= dt;
+    if (world.alarm >= ALARM_SEARCH) {
+      g.mood = 'search';
+      g.stimulus = { ...world.lastKnown };
+      g.sweepLeft = 0;
+      return;
     }
-    case 'search': {
-      guard.searchTime += dt;
-      if (walkToward(guard, guard.targetX, guard.targetY, GUARD_SPEED.search, dt, solids)) {
-        // Arrived: sweep the area for ~2.2s, then give up.
-        guard.sweepTime += dt;
-        const sweep = Math.sin((guard.sweepTime / 2.2) * Math.PI * 2) * 0.9;
-        const base = Math.atan2(guard.targetY - guard.y, guard.targetX - guard.x);
-        guard.facing = base + sweep;
-        if (guard.sweepTime > 2.2) {
-          guard.mood = 'return';
-          guard.sweepTime = 0;
-        }
+    if (g.stareT <= 0 && !sees) {
+      if (world.alarm >= ALARM_SUSPECT) {
+        g.mood = 'search';
+        g.stimulus = { ...world.lastKnown };
+        g.sweepLeft = 0;
       } else {
-        guard.sweepTime = 0;
+        g.mood = 'return';
       }
-      break;
     }
-    case 'chase': {
-      // Run at the player's last seen spot; the world refreshes it while
-      // the player is visible. Losing contact cools the chase to a search.
-      if (sense.seesPlayer) {
-        guard.lastSeenX = sense.playerX;
-        guard.lastSeenY = sense.playerY;
-        guard.lostTime = 0;
-      } else {
-        guard.lostTime += dt;
-      }
-      walkToward(guard, guard.lastSeenX, guard.lastSeenY, GUARD_SPEED.chase, dt, solids);
-      if (guard.lostTime > 3.2) {
-        guard.mood = 'search';
-        guard.targetX = guard.lastSeenX;
-        guard.targetY = guard.lastSeenY;
-        guard.searchTime = 0;
-        guard.sweepTime = 0;
-      }
-      break;
-    }
-    case 'return': {
-      // Walk back to the current patrol waypoint, then resume the loop.
-      const t = wp(guard.waypointIndex);
-      if (walkToward(guard, t.x, t.y, GUARD_SPEED.return, dt, solids)) {
-        guard.mood = 'patrol';
-        guard.pauseLeft = 0.4;
-        guard.pauseTotal = 0.4;
-        guard.sweepTime = 0;
-        guard.sweepBase = guard.facing;
-      }
-      break;
-    }
+    return;
   }
 
-  // Footstep timer for the audio bed: faster in chase.
-  if (guard.moving) {
-    guard.stepTimer -= dt;
+  if (g.mood === 'search') {
+    if (sees && world.alarm >= ALARM_SEARCH) {
+      // Fresh eyes on the thief while searching: keep hunting the
+      // last known spot, which the world just refreshed.
+      g.stimulus = { ...world.lastKnown };
+    }
+    if (g.stimulus) {
+      const d = Math.hypot(g.stimulus.x - g.x, g.stimulus.y - g.y);
+      if (d > 8) {
+        const moved = stepToward(world.grid, g.x, g.y, 13, g.stimulus.x, g.stimulus.y, GUARD_SEARCH, dt);
+        if (moved.moved > 0) {
+          g.facing = Math.atan2(g.stimulus.y - g.y, g.stimulus.x - g.x);
+        }
+        g.x = moved.x;
+        g.y = moved.y;
+        return;
+      }
+    }
+    // Arrived: sweep the spot for a while, then walk home.
+    if (g.sweepLeft <= 0) g.sweepLeft = SEARCH_SWEEP_TIME;
+    g.sweepLeft -= dt;
+    g.sweepT += dt;
+    g.facing = g.sweepBase + Math.sin(g.sweepT * 1.4) * SWEEP_HALF_ANGLE;
+    if (g.sweepLeft <= 0) g.mood = 'return';
+    return;
   }
-  return guard;
+
+  if (g.mood === 'return') {
+    const home = tileCenter(g.waypoints[g.wp][0], g.waypoints[g.wp][1]);
+    const d = Math.hypot(home.x - g.x, home.y - g.y);
+    if (d <= 6) {
+      g.x = home.x;
+      g.y = home.y;
+      g.mood = 'patrol';
+      g.pauseLeft = g.pause * 0.5;
+      return;
+    }
+    const moved = stepToward(world.grid, g.x, g.y, 13, home.x, home.y, GUARD_RETURN, dt);
+    if (moved.moved > 0) {
+      g.facing = Math.atan2(home.y - g.y, home.x - g.x);
+    }
+    g.x = moved.x;
+    g.y = moved.y;
+    return;
+  }
+
+  // patrol
+  if (g.pauseLeft > 0) {
+    g.pauseLeft -= dt;
+    g.sweepT += dt;
+    g.facing = g.sweepBase + Math.sin(g.sweepT * 1.1) * SWEEP_HALF_ANGLE;
+    return;
+  }
+  const target = guardTarget(g);
+  const moved = stepToward(world.grid, g.x, g.y, 13, target.x, target.y, GUARD_PATROL, dt);
+  if (moved.moved > 0) {
+    g.facing = Math.atan2(target.y - g.y, target.x - g.x);
+  }
+  g.x = moved.x;
+  g.y = moved.y;
+  if (Math.hypot(target.x - g.x, target.y - g.y) <= 6) {
+    g.x = target.x;
+    g.y = target.y;
+    arriveAtWaypoint(g, world);
+  }
 }
 
-// The light at a point: 1.0 under a lamp, DARK_EXPOSURE elsewhere.
-export function sampleExposure(x, y, lamps, lampRadius) {
-  for (let i = 0; i < lamps.length; i++) {
-    const dx = x - lamps[i].x;
-    const dy = y - lamps[i].y;
-    if (dx * dx + dy * dy <= lampRadius * lampRadius) return 1.0;
-  }
-  return DARK_EXPOSURE;
+// A patrol-only step for the title screen: the guards walk their beats
+// with no thief to see, so the cover shows a living floor.
+export function updateGuardAmbient(g, world, dt) {
+  const savedMood = g.mood;
+  const savedSees = g.seesPlayer;
+  g.mood = 'patrol';
+  g.seesPlayer = false;
+  updateGuard(g, world, dt);
+  g.mood = savedMood;
+  g.seesPlayer = savedSees;
 }
-
-export { clamp };

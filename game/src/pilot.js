@@ -1,83 +1,116 @@
-// Vesper Vault — the steering pilot: a waypoint follower that drives the
-// player through the real simulation. Screenshot staging and the headless
-// playability check both use it, so the shots prove what a player can do.
+// Vesper Vault — the pilot: a waypoint steering controller that plays
+// through the world's own movement code. The screenshot staging and
+// the sneak-only bot test both drive it, so a staged frame is always a
+// frame the real simulation produced, never a posed fake.
+// Routes run along open lines and door gaps with intermediate
+// waypoints, because greedy steering deadlocks when the target shares
+// the pilot's exact latitude across a wall.
 
-import { TILE } from './config.js';
-import { dist } from './geometry.js';
-import { tileCenter } from './levels.js';
+import { distance, tileCenter } from './geometry.js';
 
-// A pilot follows tile waypoints in order, picking its gait by how close
-// the nearest guard is. `legs` are [tileX, tileY] pairs.
-export function createPilot(legs) {
+// A waypoint may be [tileX, tileY] or [tileX, tileY, untilFn]: the
+// pilot stands at the tile until untilFn(world) holds, then moves on.
+export function createPilot(waypoints, opts = {}) {
   return {
-    legs: legs.map(([tx, ty]) => tileCenter(tx, ty)),
+    waypoints,
     index: 0,
+    gait: opts.gait || 'walk',
+    lanes: opts.lanes || false,
+    sneakRadius: opts.sneakRadius || 210,
+    arriveRadius: opts.arriveRadius || 10,
+    dwellSteps: opts.dwellSteps || 0,
+    dwellLeft: 0,
     done: false,
+    stuckSteps: 0,
+    lastDist: Infinity,
   };
 }
 
-// Fill `input` for one fixed step. Returns true while the pilot is still
-// travelling; false once it has arrived at its last waypoint.
-export function pilotStep(pilot, world, input, sneakRadius = 210) {
-  if (pilot.done || pilot.index >= pilot.legs.length) {
-    pilot.done = true;
-    input.mx = 0;
-    input.my = 0;
-    input.sneak = false;
-    input.sprint = false;
-    return false;
+export function updatePilot(pilot, world, dt) {
+  if (pilot.done) {
+    return { ax: 0, ay: 0, sneak: true, sprint: false, pendingCoin: null };
   }
-  const target = pilot.legs[pilot.index];
+  if (pilot.dwellLeft > 0) {
+    pilot.dwellLeft -= 1;
+    if (pilot.dwellLeft <= 0) pilot.done = true;
+    return { ax: 0, ay: 0, sneak: true, sprint: false, pendingCoin: null };
+  }
+  const target = tileCenter(pilot.waypoints[pilot.index][0], pilot.waypoints[pilot.index][1]);
   const p = world.player;
-  const d = dist(p.x, p.y, target.x, target.y);
-  if (d < 10) {
-    pilot.index += 1;
-    if (pilot.index >= pilot.legs.length) {
-      pilot.done = true;
-      input.mx = 0;
-      input.my = 0;
-      input.sneak = false;
-      input.sprint = false;
-      return false;
+  const dx = target.x - p.x;
+  const dy = target.y - p.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= pilot.arriveRadius) {
+    // A waypoint may carry a third element, a predicate on the world:
+    // the pilot stands here until it holds (a timed wait, or a guard
+    // being somewhere safe to pass), then moves on.
+    const until = pilot.waypoints[pilot.index][2];
+    if (typeof until === 'function' && !until(world)) {
+      return { ax: 0, ay: 0, sneak: true, sprint: false, pendingCoin: null };
     }
+    pilot.index += 1;
+    pilot.lastDist = Infinity;
+    pilot.stuckSteps = 0;
+    if (pilot.index >= pilot.waypoints.length) {
+      if (pilot.dwellSteps > 0) {
+        pilot.dwellLeft = pilot.dwellSteps;
+      } else {
+        pilot.done = true;
+      }
+      return { ax: 0, ay: 0, sneak: true, sprint: false, pendingCoin: null };
+    }
+    return updatePilot(pilot, world, dt);
   }
-  const t = pilot.legs[pilot.index];
-  const dx = t.x - p.x;
-  const dy = t.y - p.y;
-  const len = Math.hypot(dx, dy) || 1;
-  input.mx = dx / len;
-  input.my = dy / len;
-  // Sneak whenever a guard is close; otherwise walk.
-  let nearest = Infinity;
-  for (const g of world.guards) {
-    nearest = Math.min(nearest, dist(p.x, p.y, g.x, g.y));
+  // If the pilot stops closing in, it is pressed against a wall face:
+  // give up on this waypoint and take the next one rather than grind.
+  if (d > pilot.lastDist - 0.05) {
+    pilot.stuckSteps += 1;
+  } else {
+    pilot.stuckSteps = 0;
   }
-  input.sneak = nearest < sneakRadius;
-  input.sprint = false;
-  return true;
-}
-
-// A sprinting pilot: same follower, always at full speed.
-export function pilotSprint(pilot, world, input) {
-  const travelling = pilotStep(pilot, world, input, 0);
-  input.sneak = false;
-  input.sprint = travelling;
-  return travelling;
-}
-
-// Run the world for up to `maxSteps` fixed steps under a pilot callback
-// that fills the input each step; stop early when `stopWhen(world)` is
-// true. Returns the number of steps run.
-export function runPilot(world, maxSteps, drive, stopWhen) {
-  const input = { mx: 0, my: 0, sneak: false, sprint: false, coinTarget: null };
-  let steps = 0;
-  for (; steps < maxSteps; steps++) {
-    if (stopWhen && stopWhen(world)) break;
-    drive(world, input);
-    world.update(1 / 60, input);
-    input.coinTarget = null;
+  pilot.lastDist = d;
+  if (pilot.stuckSteps > 240) {
+    pilot.index += 1;
+    pilot.stuckSteps = 0;
+    pilot.lastDist = Infinity;
+    if (pilot.index >= pilot.waypoints.length) {
+      pilot.done = true;
+      return { ax: 0, ay: 0, sneak: true, sprint: false, pendingCoin: null };
+    }
+    return updatePilot(pilot, world, dt);
   }
-  return steps;
-}
 
-export { TILE };
+  let sneak = false;
+  let sprint = false;
+  if (pilot.gait === 'sneak') {
+    sneak = true;
+  } else if (pilot.gait === 'sprint') {
+    sprint = true;
+  } else if (pilot.gait === 'auto') {
+    let near = false;
+    for (const g of world.guards) {
+      if (distance(g.x, g.y, p.x, p.y) <= pilot.sneakRadius) {
+        near = true;
+        break;
+      }
+    }
+    sneak = near;
+  }
+  if (pilot.lanes) {
+    // Travel on a centreline: correct the smaller error first (to
+    // within 2px), then run along the row or column. A diagonal cut
+    // across a crate corner is how a pilot gets wedged against a wall.
+    let ax = 0;
+    let ay = 0;
+    if (Math.abs(dy) < Math.abs(dx)) {
+      if (Math.abs(dy) > 2) ay = Math.sign(dy);
+      else ax = Math.sign(dx);
+    } else if (Math.abs(dx) > 2) {
+      ax = Math.sign(dx);
+    } else {
+      ay = Math.sign(dy);
+    }
+    return { ax, ay, sneak, sprint, pendingCoin: null };
+  }
+  return { ax: dx / d, ay: dy / d, sneak, sprint, pendingCoin: null };
+}

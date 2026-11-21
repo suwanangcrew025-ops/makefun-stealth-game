@@ -1,393 +1,392 @@
 // Vesper Vault — the world: level parsing, the player, detection, noise,
-// coins, loot, the exit and the screen state machine. The world is plain
-// data plus a fixed-step update; it draws nothing and hears nothing, so a
-// headless check can drive it exactly like the browser does.
+// the coin, loot, the exit, scoring and the screen state machine.
+// The world is DOM-free and deterministic: no Math.random anywhere, a
+// fixed 1/60s step, and every run from the same inputs lands on the same
+// state, which is what makes the screenshots reproducible.
 
 import {
-  TILE,
-  COLS,
-  ROWS,
-  STEP,
-  PLAYER_RADIUS,
-  GAIT,
-  GUARD_SPEED,
-  VISION_RANGE,
-  VISION_HALF_ANGLE,
-  LAMP_RADIUS,
-  DARK_EXPOSURE,
   ALARM_DECAY,
-  ALARM_SUSPECT,
-  ALARM_SEARCH,
   ALARM_FULL,
+  ALARM_SEARCH,
+  ALARM_SUSPECT,
   CATCH_DISTANCE,
-  COIN_COUNT,
+  COINS_PER_FLOOR,
+  COIN_FLIGHT_TIME,
   COIN_MAX_THROW,
   COIN_RING_RADIUS,
-  SCORE_TREASURE,
-  SCORE_RELIC,
+  HEAR_SPRINT,
+  HEAR_WALK,
+  PAR_TIMES,
+  PICKUP_RADIUS,
+  PLAYER_RADIUS,
   SCORE_GHOST,
+  SCORE_RELIC,
   SCORE_SPEED_PER_SECOND,
+  SCORE_TREASURE,
+  SPEED_SNEAK,
+  SPEED_SPRINT,
+  SPEED_WALK,
+  STEP,
+  TILE,
 } from './config.js';
-import { clamp, dist, lineOfSight, moveCircle } from './geometry.js';
-import { LEVELS, tileCenter } from './levels.js';
-import { createGuard, updateGuard, visionTest, sampleExposure } from './guards.js';
+import { FLOORS } from './levels.js';
+import { attemptMove, distance, tileCenter } from './geometry.js';
+import { createGuard, updateGuard, updateGuardAmbient, visionRate } from './guards.js';
 
-const SOLID_CHARS = new Set(['#', 'C', 'S']);
+export function alarmWord(world) {
+  if (world.alarm < ALARM_SUSPECT) return 'unseen';
+  if (world.alarm < ALARM_SEARCH) return 'SEEN?';
+  if (world.alarm < ALARM_FULL) return 'HUNTED';
+  return 'ALARM';
+}
 
-export class World {
-  constructor() {
-    this.state = 'title'; // title | brief | play | caught | clear | victory
-    this.paused = false;
-    this.floorIndex = 0;
-    this.score = 0;
-    this.floorStartScore = 0;
-    this.floorTime = 0;
-    this.alarm = 0;
-    this.alarmWord = 'unseen';
-    this.ghostLost = false;
-    this.statusMessage = '';
-    this.sounds = []; // sound-event queue, drained by the audio layer
-    this.loadFloor(0);
-    this.state = 'title';
-    this.setStatus('Vesper Vault. Press Enter to begin the heist.');
+export function createWorld(floorIndex = 0, score = 0) {
+  const world = {
+    floorIndex,
+    floor: FLOORS[floorIndex],
+    grid: [],
+    player: { x: 0, y: 0, gait: 'walk', coins: COINS_PER_FLOOR },
+    guards: [],
+    treasures: [],
+    relic: null,
+    lamps: [],
+    exits: [],
+    alarm: 0,
+    alarmEverFull: false,
+    score,
+    floorStartScore: score,
+    floorTime: 0,
+    lootCount: 0,
+    lootTotal: 0,
+    exitOpen: false,
+    screen: 'title',
+    lastKnown: { x: 0, y: 0 },
+    coin: null,
+    sounds: [],
+    status: '',
+    statusDirty: true,
+    clearStats: null,
+    steps: 0,
+    stepTimer: 0,
+    caughtBy: -1,
+  };
+  loadFloor(world, floorIndex);
+  setStatus(world, 'Vesper Vault — press Enter to begin.');
+  return world;
+}
+
+function setStatus(world, text) {
+  if (world.status !== text) {
+    world.status = text;
+    world.statusDirty = true;
   }
+}
 
-  setStatus(text) {
-    this.statusMessage = text;
-  }
-
-  loadFloor(index) {
-    this.floorIndex = index;
-    const level = LEVELS[index];
-    this.level = level;
-    this.solids = [];
-    this.lamps = [];
-    this.treasures = [];
-    this.exitTiles = [];
-    let start = tileCenter(2, 2);
-    this.relic = null;
-    for (let y = 0; y < ROWS; y++) {
-      for (let x = 0; x < COLS; x++) {
-        const ch = level.grid[y][x];
-        const px = x * TILE;
-        const py = y * TILE;
-        if (SOLID_CHARS.has(ch)) {
-          this.solids.push({ x: px, y: py, w: TILE, h: TILE, kind: ch });
-        } else if (ch === 'L') {
-          this.lamps.push({ x: px + TILE / 2, y: py + TILE / 2 });
-        } else if (ch === 'P') {
-          start = { x: px + TILE / 2, y: py + TILE / 2 };
-        } else if (ch === 'R') {
-          this.relic = { x: px + TILE / 2, y: py + TILE / 2, taken: false };
-        } else if (ch === 'T') {
-          this.treasures.push({ x: px + TILE / 2, y: py + TILE / 2, taken: false });
-        } else if (ch === 'E') {
-          this.exitTiles.push({ x: px, y: py, w: TILE, h: TILE });
-        }
+// Parse one floor's tile map into the live world: markers become floor
+// tiles and their positions are kept in the matching lists.
+export function loadFloor(world, floorIndex) {
+  const def = FLOORS[floorIndex];
+  world.floorIndex = floorIndex;
+  world.floor = def;
+  world.grid = def.rows.map((row) => row.split(''));
+  world.treasures = [];
+  world.lamps = [];
+  world.exits = [];
+  world.relic = null;
+  for (let ty = 0; ty < world.grid.length; ty++) {
+    for (let tx = 0; tx < world.grid[ty].length; tx++) {
+      const c = world.grid[ty][tx];
+      const centre = tileCenter(tx, ty);
+      if (c === 'P') {
+        world.player.x = centre.x;
+        world.player.y = centre.y;
+        world.grid[ty][tx] = '.';
+      } else if (c === 'R') {
+        world.relic = { x: centre.x, y: centre.y, taken: false };
+        world.grid[ty][tx] = '.';
+      } else if (c === 'T') {
+        world.treasures.push({ x: centre.x, y: centre.y, taken: false });
+        world.grid[ty][tx] = '.';
+      } else if (c === 'L') {
+        world.lamps.push({ x: centre.x, y: centre.y });
+        world.grid[ty][tx] = '.';
+      } else if (c === 'E') {
+        world.exits.push({ tx, ty });
+        world.grid[ty][tx] = '.';
       }
     }
-    this.player = {
-      x: start.x,
-      y: start.y,
-      facing: -Math.PI / 2,
-      sneaking: false,
-      gait: 'walk',
-      moving: false,
-      coins: COIN_COUNT,
-      stepTimer: 0,
-    };
-    this.guards = level.patrols.map((def, i) => createGuard(def, i));
-    this.coins = []; // coins in flight
-    this.rings = []; // landed coin rings, still ringing
-    this.alarm = 0;
-    this.alarmWord = 'unseen';
-    this.ghostLost = false;
-    this.floorTime = 0;
-    this.floorStartScore = this.score;
-    this.lastKnownX = start.x;
-    this.lastKnownY = start.y;
   }
+  world.guards = def.guards.map((g, i) => createGuard(g, i));
+  world.player.coins = COINS_PER_FLOOR;
+  world.player.gait = 'walk';
+  world.alarm = 0;
+  world.alarmEverFull = false;
+  world.floorTime = 0;
+  world.lootCount = 0;
+  world.lootTotal = world.treasures.length + 1;
+  world.exitOpen = false;
+  world.coin = null;
+  world.sounds = [];
+  world.clearStats = null;
+  world.caughtBy = -1;
+  world.lastKnown = { x: world.player.x, y: world.player.y };
+  world.stepTimer = 0;
+}
 
-  get lootTotal() {
-    return this.treasures.length + 1;
-  }
+export function resetFloor(world) {
+  world.score = world.floorStartScore;
+  loadFloor(world, world.floorIndex);
+  world.screen = 'play';
+  setStatus(world, `${world.floor.name} — ${alarmWord(world)}. Loot 0/${world.lootTotal}.`);
+}
 
-  get lootGot() {
-    return this.treasures.filter((t) => t.taken).length + (this.relic?.taken ? 1 : 0);
-  }
-
-  exposureAt(x, y) {
-    return sampleExposure(x, y, this.lamps, LAMP_RADIUS);
-  }
-
-  // The shared alarm word the HUD eye and the status line show.
-  alarmWordFor(alarm) {
-    if (alarm >= ALARM_FULL) return 'ALARM';
-    if (alarm >= ALARM_SEARCH) return 'HUNTED';
-    if (alarm >= ALARM_SUSPECT) return 'SEEN?';
-    return 'unseen';
-  }
-
-  // --- screen transitions -------------------------------------------------
-
-  startGame() {
-    this.score = 0;
-    this.loadFloor(0);
-    this.state = 'brief';
-    this.setStatus(`${this.level.name}. ${this.level.brief}`);
-  }
-
-  beginFloor() {
-    this.state = 'play';
-    this.setStatus(`${this.level.name}. Stay in the dark. Lift ${this.level.relicName}.`);
-  }
-
-  retryFloor() {
-    this.score = this.floorStartScore;
-    this.loadFloor(this.floorIndex);
-    this.state = 'brief';
-    this.setStatus(`Back to ${this.level.name}. The museum resets; so do you.`);
-  }
-
-  nextFloor() {
-    if (this.floorIndex + 1 >= LEVELS.length) {
-      this.state = 'victory';
-      this.setStatus(`The vault is empty. Final score ${this.score}. You vanished.`);
-      this.sounds.push({ name: 'victory' });
-      return;
-    }
-    this.loadFloor(this.floorIndex + 1);
-    this.state = 'brief';
-    this.setStatus(`${this.level.name}. ${this.level.brief}`);
-  }
-
-  // --- fixed-step update --------------------------------------------------
-
-  update(dt, input) {
-    if (this.state === 'title') {
-      // The museum lives behind the title: guards walk their rounds.
-      for (let i = 0; i < this.guards.length; i++) {
-        updateGuard(this.guards[i], this.level.patrols[i], dt, this.solids, {
-          seesPlayer: false,
-          playerX: this.player.x,
-          playerY: this.player.y,
-        });
-      }
-      return;
-    }
-    if (this.state !== 'play' || this.paused) return;
-    this.floorTime += dt;
-
-    // --- the player -------------------------------------------------------
-    const p = this.player;
-    const mx = input.mx || 0;
-    const my = input.my || 0;
-    const moving = mx !== 0 || my !== 0;
-    p.sneaking = !!input.sneak;
-    p.gait = p.sneaking ? 'sneak' : input.sprint ? 'sprint' : 'walk';
-    const speed = GAIT[p.gait].speed;
-    if (moving) {
-      const len = Math.hypot(mx, my);
-      const dx = (mx / len) * speed * dt;
-      const dy = (my / len) * speed * dt;
-      const moved = moveCircle(p.x, p.y, dx, dy, PLAYER_RADIUS, this.solids);
-      p.moving = moved.x !== p.x || moved.y !== p.y;
-      p.x = moved.x;
-      p.y = moved.y;
-      p.facing = Math.atan2(my, mx);
-      p.stepTimer -= dt;
-      if (p.stepTimer <= 0 && p.moving) {
-        p.stepTimer = p.gait === 'sprint' ? 0.28 : p.gait === 'walk' ? 0.42 : 0.6;
-        this.sounds.push({ name: 'step', gait: p.gait });
-      }
+// Enter advances the menus: title to brief, brief to play, caught back
+// to a fresh attempt at the floor, clear on to the next floor's brief,
+// victory back to the title.
+export function advanceMenu(world) {
+  if (world.screen === 'title') {
+    world.screen = 'brief';
+    setStatus(world, `${world.floor.name}. ${world.floor.brief}`);
+    world.sounds.push('click');
+  } else if (world.screen === 'brief') {
+    world.screen = 'play';
+    world.floorStartScore = world.score;
+    setStatus(world, `${world.floor.name} — unseen. Loot 0/${world.lootTotal}.`);
+    world.sounds.push('click');
+  } else if (world.screen === 'caught') {
+    resetFloor(world);
+    world.sounds.push('click');
+  } else if (world.screen === 'clear') {
+    if (world.floorIndex < FLOORS.length - 1) {
+      loadFloor(world, world.floorIndex + 1);
+      world.screen = 'brief';
+      setStatus(world, `${world.floor.name}. ${world.floor.brief}`);
     } else {
-      p.moving = false;
+      world.screen = 'victory';
+      setStatus(world, `The Vesper is yours. Final score ${world.score}. Press Enter.`);
     }
+    world.sounds.push('click');
+  } else if (world.screen === 'victory') {
+    world.score = 0;
+    loadFloor(world, 0);
+    world.screen = 'title';
+    setStatus(world, 'Vesper Vault — press Enter to begin.');
+    world.sounds.push('click');
+  }
+}
 
-    // --- coin toss ----------------------------------------------------------
-    if (input.coinTarget && p.coins > 0) {
-      const d = dist(p.x, p.y, input.coinTarget.x, input.coinTarget.y);
-      const cl = Math.min(d, COIN_MAX_THROW);
-      const a = Math.atan2(input.coinTarget.y - p.y, input.coinTarget.x - p.x);
-      this.coins.push({
-        x0: p.x,
-        y0: p.y,
-        x1: p.x + Math.cos(a) * cl,
-        y1: p.y + Math.sin(a) * cl,
-        x: p.x,
-        y: p.y,
-        t: 0,
-        dur: 0.45,
-      });
-      p.coins -= 1;
-      this.sounds.push({ name: 'coinThrow' });
-      this.setStatus(`Coin away — ${p.coins} left.`);
-    }
-    for (let i = this.coins.length - 1; i >= 0; i--) {
-      const c = this.coins[i];
-      c.t += dt;
-      const k = Math.min(c.t / c.dur, 1);
-      c.x = c.x0 + (c.x1 - c.x0) * k;
-      c.y = c.y0 + (c.y1 - c.y0) * k;
-      if (k >= 1) {
-        this.coins.splice(i, 1);
-        this.rings.push({ x: c.x1, y: c.y1, ttl: 0.9 });
-        this.sounds.push({ name: 'coinRing' });
-      }
-    }
-    for (let i = this.rings.length - 1; i >= 0; i--) {
-      this.rings[i].ttl -= dt;
-      if (this.rings[i].ttl <= 0) this.rings.splice(i, 1);
-    }
+function throwCoin(world, target) {
+  const p = world.player;
+  const dx = target.x - p.x;
+  const dy = target.y - p.y;
+  const d = Math.hypot(dx, dy);
+  const reach = Math.min(d, COIN_MAX_THROW);
+  const nx = d > 0 ? p.x + (dx / d) * reach : p.x;
+  const ny = d > 0 ? p.y + (dy / d) * reach : p.y;
+  world.coin = { x0: p.x, y0: p.y, x1: nx, y1: ny, t: 0, state: 'flying', ringT: 0 };
+  world.player.coins -= 1;
+  world.sounds.push('coin-throw');
+}
 
-    // --- noise: what the guards hear this step ---------------------------
-    const heard = []; // {x, y, radius}
-    if (moving && p.gait === 'sprint') {
-      heard.push({ x: p.x, y: p.y, radius: GAIT.sprint.hearing });
+function landCoin(world) {
+  const coin = world.coin;
+  coin.state = 'ring';
+  coin.ringT = 0.6;
+  world.sounds.push('coin-ring');
+  for (const g of world.guards) {
+    if (g.mood === 'chase') continue;
+    if (distance(g.x, g.y, coin.x1, coin.y1) <= COIN_RING_RADIUS) {
+      g.mood = 'search';
+      g.stimulus = { x: coin.x1, y: coin.y1 };
+      g.sweepLeft = 0;
     }
-    if (moving && p.gait === 'walk') {
-      heard.push({ x: p.x, y: p.y, radius: GAIT.walk.hearing, suspectOnly: true });
-    }
-    for (const ring of this.rings) {
-      heard.push({ x: ring.x, y: ring.y, radius: COIN_RING_RADIUS });
-    }
+  }
+}
 
-    // --- vision and the shared alarm --------------------------------------
-    const exposure = this.exposureAt(p.x, p.y);
-    let bestFill = 0;
-    let bestGuard = null;
-    for (const g of this.guards) {
-      g.fillRate = visionTest(g, p, exposure, this.solids);
-      g.seesPlayer = g.fillRate > 0;
-      if (g.seesPlayer) {
-        this.lastKnownX = p.x;
-        this.lastKnownY = p.y;
-        if (g.fillRate > bestFill) {
-          bestFill = g.fillRate;
-          bestGuard = g;
-        }
-      }
+function clearFloor(world) {
+  const par = PAR_TIMES[world.floorIndex];
+  const speedBonus = Math.max(0, Math.round(par - world.floorTime)) * SCORE_SPEED_PER_SECOND;
+  const ghostBonus = world.alarmEverFull ? 0 : SCORE_GHOST;
+  world.score += speedBonus + ghostBonus;
+  world.clearStats = {
+    time: world.floorTime,
+    speedBonus,
+    ghostBonus,
+    loot: world.lootCount,
+    lootTotal: world.lootTotal,
+    score: world.score,
+  };
+  world.screen = 'clear';
+  world.sounds.push('clear');
+  setStatus(
+    world,
+    `Floor clear in ${world.floorTime.toFixed(1)}s. Speed +${speedBonus}, ghost +${ghostBonus}. Score ${world.score}. Press Enter.`,
+  );
+}
+
+function caught(world, guardId) {
+  world.screen = 'caught';
+  world.caughtBy = guardId;
+  world.sounds.push('caught');
+  setStatus(world, 'Caught! The guards close in. Press R to retry the floor.');
+}
+
+// One fixed step. `input` is a plain struct: {ax, ay, sneak, sprint,
+// pendingCoin}. The world alone clears pendingCoin, after it has
+// consumed it — the menu handler never touches it.
+export function stepWorld(world, input, dt = STEP) {
+  world.steps += 1;
+
+  if (world.screen === 'title') {
+    for (const g of world.guards) updateGuardAmbient(g, world, dt);
+    return;
+  }
+  if (world.screen !== 'play') return;
+
+  world.floorTime += dt;
+  const p = world.player;
+
+  // --- Movement and gait.
+  let ax = input.ax || 0;
+  let ay = input.ay || 0;
+  const len = Math.hypot(ax, ay);
+  if (len > 1) {
+    ax /= len;
+    ay /= len;
+  }
+  const moving = len > 0.01;
+  p.gait = input.sneak ? 'sneak' : input.sprint ? 'sprint' : 'walk';
+  const speed = p.gait === 'sneak' ? SPEED_SNEAK : p.gait === 'sprint' ? SPEED_SPRINT : SPEED_WALK;
+  if (moving) {
+    const moved = attemptMove(
+      world.grid, p.x, p.y, PLAYER_RADIUS,
+      ax * speed * dt, ay * speed * dt,
+      p.x + ax * speed * dt, p.y + ay * speed * dt,
+    );
+    p.x = moved.x;
+    p.y = moved.y;
+    // Footsteps on a cadence set by the gait; sneaking stays soft.
+    world.stepTimer -= dt;
+    if (world.stepTimer <= 0) {
+      world.sounds.push(p.gait === 'sneak' ? 'step-soft' : 'step');
+      world.stepTimer = p.gait === 'sneak' ? 0.55 : p.gait === 'sprint' ? 0.28 : 0.4;
     }
-    if (bestFill > 0) {
-      this.alarm = clamp(this.alarm + bestFill * dt, 0, 1);
+  }
+
+  // --- The coin. Only the world consumes the pending target, and it
+  // clears it right after the throw is set up.
+  if (input.pendingCoin && !world.coin && p.coins > 0) {
+    throwCoin(world, input.pendingCoin);
+  }
+  if (input.pendingCoin) input.pendingCoin = null;
+  if (world.coin) {
+    const coin = world.coin;
+    if (coin.state === 'flying') {
+      coin.t += dt;
+      if (coin.t >= COIN_FLIGHT_TIME) landCoin(world);
     } else {
-      this.alarm = clamp(this.alarm - ALARM_DECAY * dt, 0, 1);
+      coin.ringT -= dt;
+      if (coin.ringT <= 0) world.coin = null;
     }
-    const word = this.alarmWordFor(this.alarm);
-    if (word !== this.alarmWord) {
-      this.alarmWord = word;
-      if (word === 'SEEN?') this.setStatus('Seen? A guard is staring at you — break line of sight.');
-      if (word === 'HUNTED') this.setStatus('Hunted. Guards are searching your last known position.');
-      if (word === 'ALARM') this.setStatus('ALARM. Every guard is chasing you. Run for the dark.');
-      if (word === 'unseen') this.setStatus('Unseen. The dark is yours again.');
-    }
-    if (this.alarm >= ALARM_FULL) this.ghostLost = true;
+  }
 
-    // --- guard moods -------------------------------------------------------
-    for (let i = 0; i < this.guards.length; i++) {
-      const g = this.guards[i];
-      const sense = {
-        seesPlayer: g.seesPlayer,
-        playerX: p.x,
-        playerY: p.y,
-      };
-      // Thresholds: a guard that sees you goes suspect, then the floor
-      // searches your last known spot, then everyone chases.
-      if (this.alarm >= ALARM_FULL && g.mood !== 'chase') {
-        g.mood = 'chase';
-        g.lastSeenX = this.lastKnownX;
-        g.lastSeenY = this.lastKnownY;
-        g.lostTime = 0;
-        if (i === 0 || bestGuard === g) this.sounds.push({ name: 'alarm' });
-      } else if (this.alarm >= ALARM_SEARCH && g.mood !== 'chase' && g.mood !== 'search') {
+  // --- Noise: sprinting pulls guards in earshot to the thief's spot,
+  // walking only makes a nearby patroller stop and stare.
+  if (moving) {
+    for (const g of world.guards) {
+      const d = distance(g.x, g.y, p.x, p.y);
+      if (p.gait === 'sprint' && d <= HEAR_SPRINT && g.mood !== 'chase') {
         g.mood = 'search';
-        g.targetX = this.lastKnownX;
-        g.targetY = this.lastKnownY;
-        g.searchTime = 0;
-        g.sweepTime = 0;
-      } else if (this.alarm >= ALARM_SUSPECT && g.seesPlayer && g.mood === 'patrol') {
+        g.stimulus = { x: p.x, y: p.y };
+        g.sweepLeft = 0;
+      } else if (p.gait === 'walk' && d <= HEAR_WALK && g.mood === 'patrol') {
         g.mood = 'suspect';
-        g.targetX = p.x;
-        g.targetY = p.y;
-        g.sweepTime = 0;
+        g.stimulus = { x: p.x, y: p.y };
+        g.stareT = 1.2;
       }
-      // Hearing, per guard: sprinting and coin rings pull a search,
-      // walking only makes a nearby patrolling guard suspect.
-      for (const h of heard) {
-        if (dist(g.x, g.y, h.x, h.y) <= h.radius) {
-          if (h.suspectOnly) {
-            if (g.mood === 'patrol') {
-              sense.suspected = { x: h.x, y: h.y };
-            }
-          } else {
-            sense.heard = { x: h.x, y: h.y };
-          }
-          break;
-        }
-      }
-      updateGuard(g, this.level.patrols[i], dt, this.solids, sense);
     }
+  }
 
-    // --- caught? ------------------------------------------------------------
-    for (const g of this.guards) {
-      if (g.mood === 'chase' && dist(g.x, g.y, p.x, p.y) < CATCH_DISTANCE) {
-        this.state = 'caught';
-        this.score = this.floorStartScore;
-        this.sounds.push({ name: 'caught' });
-        this.setStatus('Caught. The guards march you out — press R to try the floor again.');
+  // --- Detection: the best-seeing guard fills the shared meter.
+  let best = 0;
+  for (const g of world.guards) {
+    g.seeRate = visionRate(g, world);
+    g.seesPlayer = g.seeRate > 0;
+    if (g.seeRate > best) best = g.seeRate;
+  }
+  if (best > 0) {
+    world.lastKnown = { x: p.x, y: p.y };
+    world.alarm = Math.min(ALARM_FULL, world.alarm + best * dt);
+  } else {
+    world.alarm = Math.max(0, world.alarm - ALARM_DECAY * dt);
+  }
+  if (world.alarm >= ALARM_FULL && !world.alarmEverFull) {
+    world.alarmEverFull = true;
+    for (const g of world.guards) {
+      g.mood = 'chase';
+      g.loseT = 0;
+    }
+    world.sounds.push('alarm');
+  }
+
+  // --- Guard reactions to the meter.
+  for (const g of world.guards) {
+    if (g.mood === 'chase') continue;
+    if (g.seesPlayer && world.alarm >= ALARM_SEARCH) {
+      g.mood = 'search';
+      g.stimulus = { ...world.lastKnown };
+      g.sweepLeft = 0;
+    } else if (g.seesPlayer && world.alarm >= ALARM_SUSPECT && (g.mood === 'patrol' || g.mood === 'return')) {
+      g.mood = 'suspect';
+      g.stimulus = { x: p.x, y: p.y };
+      g.stareT = 1.2;
+    }
+  }
+
+  for (const g of world.guards) updateGuard(g, world, dt);
+
+  // --- Caught: a chasing guard within arm's reach ends the floor.
+  for (const g of world.guards) {
+    if (g.mood === 'chase' && distance(g.x, g.y, p.x, p.y) < CATCH_DISTANCE) {
+      caught(world, g.id);
+      return;
+    }
+  }
+
+  // --- Loot.
+  for (const t of world.treasures) {
+    if (!t.taken && distance(p.x, p.y, t.x, t.y) <= PICKUP_RADIUS) {
+      t.taken = true;
+      world.lootCount += 1;
+      world.score += SCORE_TREASURE;
+      world.sounds.push('pickup');
+      setStatus(world, `${world.floor.name} — ${alarmWord(world)}. Loot ${world.lootCount}/${world.lootTotal}. Treasure lifted.`);
+    }
+  }
+  if (world.relic && !world.relic.taken && distance(p.x, p.y, world.relic.x, world.relic.y) <= PICKUP_RADIUS) {
+    world.relic.taken = true;
+    world.lootCount += 1;
+    world.score += SCORE_RELIC;
+    world.exitOpen = true;
+    world.sounds.push('relic');
+    setStatus(world, `${world.floor.name} — ${alarmWord(world)}. Loot ${world.lootCount}/${world.lootTotal}. The relic is yours — reach the exit.`);
+  }
+
+  // --- The exit, sealed until the relic is held.
+  if (world.exitOpen) {
+    const ptx = Math.floor(p.x / TILE);
+    const pty = Math.floor(p.y / TILE);
+    for (const e of world.exits) {
+      if (e.tx === ptx && e.ty === pty) {
+        clearFloor(world);
         return;
       }
     }
+  }
 
-    // --- loot ---------------------------------------------------------------
-    for (const t of this.treasures) {
-      if (!t.taken && dist(p.x, p.y, t.x, t.y) < 26) {
-        t.taken = true;
-        this.score += SCORE_TREASURE;
-        this.sounds.push({ name: 'treasure' });
-        this.setStatus(`Treasure lifted. ${this.lootGot} of ${this.lootTotal} pieces. Score ${this.score}.`);
-      }
-    }
-    if (this.relic && !this.relic.taken && dist(p.x, p.y, this.relic.x, this.relic.y) < 26) {
-      this.relic.taken = true;
-      this.score += SCORE_RELIC;
-      this.sounds.push({ name: 'relic' });
-      this.setStatus(`You hold ${this.level.relicName}. The exit is open — vanish.`);
-    }
-
-    // --- exit -----------------------------------------------------------------
-    if (this.relic?.taken) {
-      for (const e of this.exitTiles) {
-        if (p.x >= e.x && p.x < e.x + e.w && p.y >= e.y && p.y < e.y + e.h) {
-          const under = Math.max(0, this.level.par - this.floorTime);
-          const speedBonus = Math.round(under * SCORE_SPEED_PER_SECOND);
-          const ghostBonus = this.ghostLost ? 0 : SCORE_GHOST;
-          this.score += speedBonus + ghostBonus;
-          this.clearStats = {
-            time: this.floorTime,
-            speedBonus,
-            ghostBonus,
-            loot: this.lootGot,
-            lootTotal: this.lootTotal,
-            score: this.score,
-          };
-          this.state = 'clear';
-          this.sounds.push({ name: 'floorClear' });
-          this.setStatus(
-            `${this.level.name} cleared in ${this.floorTime.toFixed(1)} seconds. Score ${this.score}.`,
-          );
-          return;
-        }
-      }
-    }
+  // --- The narrating status line, kept fresh as the alarm word changes.
+  const word = alarmWord(world);
+  if (world.screen === 'play') {
+    setStatus(world, `${world.floor.name} — ${word}. Loot ${world.lootCount}/${world.lootTotal}. Coins ${p.coins}. Score ${world.score}.`);
   }
 }
-
-// The world advances in fixed 1/60s steps; a caller that feeds real time
-// accumulates it and steps whole units, so the simulation never depends on
-// the frame rate.
-export function stepWorld(world, dt, input) {
-  world.update(dt, input);
-}
-
-export { STEP, VISION_RANGE, VISION_HALF_ANGLE, LAMP_RADIUS, DARK_EXPOSURE };
