@@ -5,55 +5,71 @@
 # Vesper Vault
 
 You are Wren, a thief emptying the fictional Vesper Museum over three
-floors at night. Each floor: lift the floor's relic (the exit stays sealed
-until you hold it), optionally lift side treasures, reach the exit unseen.
+floors at night. Each floor: lift the floor's relic — the exit stays
+sealed until you hold it — optionally lift side treasures, and reach
+the exit unseen. Guards patrol with vision cones; crates and shelves
+block their sight; lamp pools betray you; shadow protects you.
 
-Guards patrol with vision cones; crates and shelves block sight; lamps pool
-light that betrays you; shadow protects you. Sneak to stay silent, walk to
-stay quiet, sprint only when you must — sprinting is loud. Toss a coin to
-pull a guard away from its round. One shared alarm meter fills when a guard
-sees you: at a third it stares, at two thirds the floor searches your last
-known position, at full every guard chases. Get caught and the floor resets.
+- **Floor I — The Long Gallery:** the Star of Vesper, east room.
+- **Floor II — The Archive Stacks:** the Amber Codex, between the shelves.
+- **Floor III — The Vesper Vault:** the Heart of the Vesper, and every guard the museum has left.
 
-- **Floor I — The Long Gallery:** lift the Star of Vesper from the east room.
-- **Floor II — The Archive Stacks:** the Amber Codex sleeps between the stacks.
-- **Floor III — The Vesper Vault:** the Heart of the Vesper, and every guard
-  the museum has left.
+## How it plays
 
-Scoring: treasure 100, relic 250, speed bonus 5/second under par, ghost
-bonus 300 for a floor never fully alarmed.
+- **Vision cones** are exactly what the guards see: the drawn fan uses
+  the same raycast as the detection test. Crouching shrinks a guard's
+  range; lamp light exposes you; darkness hides you.
+- **One shared alarm meter** (the eye in the header): a guard that
+  spots you stops and stares at 0.32, guards come searching at 0.68,
+  and at 1.0 every guard gives chase. It drains when nobody sees you,
+  so a near miss is recoverable — but a floor that ever hits full alarm
+  loses its 300-point ghost bonus.
+- **Noise matters:** sprinting is heard across the room, walking only
+  worries a guard standing close by. A tossed coin (3 per floor) rings
+  on landing and pulls nearby guards to the spot.
+- **Scoring:** treasure 100, relic 250, 5 points per second under par,
+  300 ghost bonus for a floor never fully alarmed. Getting caught
+  retries the floor with the score rolled back.
 
 ## Controls
 
-WASD / arrows move · C or Ctrl sneak · Shift sprint · mouse click tosses a
-coin (3 per floor) · P pause · R restart floor · M mute · Enter advances menus.
+WASD / arrows move · **C** or Ctrl sneak · **Shift** sprint · **Click**
+toss a coin · **P** pause · **R** retry floor · **M** mute · **Enter**
+advance menus.
+
+All art is drawn on canvas and all sound is synthesized with WebAudio —
+no asset files, no network requests. An aria-live status line narrates
+every state change.
 
 ## Play it
 
 ```sh
-node serve.ts
+node serve.ts        # serves game/ on http://localhost:8080
 ```
-
-Then open http://localhost:8080 in a desktop browser. All art is drawn on
-canvas and all sound is synthesized with WebAudio — the game loads no files
-from the network.
 
 ## Layout
 
-- `main.ts` — hands the game in: copies `game/` and `screenshots/` to
-  `/output` and writes `dossier.json` with the vendored make.fun library.
-- `serve.ts` — a tiny static server for local play-testing.
-- `game/index.html` — the canvas, the status line and one module script.
-- `game/src/` — eleven modules, one job each: `config` (tuning + palette),
-  `levels` (three floors as tile maps + patrols), `geometry` (raycast, line
-  of sight, cones, sliding collision), `guards` (vision + the five-mood
-  machine), `world` (player, detection, noise, coins, loot, exit, screens),
-  `render` (floors, cones, actors, HUD alarm eye, screens), `input`
-  (keyboard/mouse to plain structs), `audio` (synthesized sound),
-  `pilot` (waypoint steering for staging and checks), `shots`
-  (deterministic screenshot staging), `main` (boot + fixed-step loop).
-- `shots.json` — the four screenshots and the `?shot=` query that stages each.
-- `screenshots/` — real renders of the game's own code: cover, play, alert,
-  caught.
+- `game/index.html` — the page: a 1280×720 canvas, one module script.
+- `game/src/config.js` — tuning constants and the night palette.
+- `game/src/levels.js` — the three floors as tile maps and patrols.
+- `game/src/geometry.js` — angles, line of sight, cone fans, sliding collision.
+- `game/src/guards.js` — the vision test and the five-mood machine.
+- `game/src/world.js` — the simulation: detection, noise, coin, loot, exit, scoring.
+- `game/src/render.js` — floors, lamp pools, cones, actors, HUD, screens.
+- `game/src/input.js` — keyboard and mouse into one plain struct.
+- `game/src/audio.js` — synthesized effects and the positional guard-step bed.
+- `game/src/pilot.js` — waypoint steering for screenshot staging and bot tests.
+- `game/src/shots.js` — the four deterministic screenshot stagings.
+- `game/src/main.js` — boot: the fixed-step loop and menu keys.
+- `main.ts` — hand-in: copies `game/` and `screenshots/`, writes `dossier.json`.
+- `shots.json` — the four screenshots and their staging queries.
 
-Built by an AI agent for make.fun's "Make the best stealth game" bounty.
+## Screenshots
+
+Staged through the real simulation (`?shot=cover|play|alert|end`):
+1-cover — the title over the patrolling first floor; 2-play — a
+treasure lifted, still unseen; 3-alert — the meter at 0.45, a guard
+staring, the thief inside an orange cone; 4-end — caught, red wash.
+
+Built by an AI agent for make.fun's "Make the best stealth game"
+bounty. Original game, original art, original sound.
