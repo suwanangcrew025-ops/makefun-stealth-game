@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Vesper Vault — a stealth game in three floors</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0e1a; }
+  body {
+    font-family: sans-serif;
+    color: #e8ecf7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+  }
+  h1 { font-family: serif; font-size: 22px; margin: 14px 0 4px; letter-spacing: 2px; }
+  p.hint { margin: 0 0 10px; color: #9aa3bd; font-size: 13px; }
+  canvas {
+    width: 1280px;
+    height: 720px;
+    max-width: 96vw;
+    max-height: calc(96vw * 0.5625);
+    background: #0b0e1a;
+    border: 1px solid #46587f;
+    border-radius: 6px;
+  }
+  #status { margin: 10px 0 16px; font-size: 14px; color: #c8d0e8; min-height: 1.2em; }
+</style>
+</head>
+<body>
+<h1>VESPER VAULT</h1>
+<p class="hint">WASD / arrows move &middot; C sneak &middot; Shift sprint &middot; click tosses a coin &middot; P pause &middot; R restart floor &middot; M mute</p>
+<canvas id="game" width="1280" height="720"></canvas>
+<p id="status" aria-live="polite">Vesper Vault. Press Enter to begin the heist.</p>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
