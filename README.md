@@ -68,8 +68,10 @@ node serve.ts        # serves game/ on http://localhost:8080
 
 Staged through the real simulation (`?shot=cover|play|alert|end`):
 1-cover — the title over the patrolling first floor; 2-play — a
-treasure lifted, still unseen; 3-alert — the meter at 0.45, a guard
-staring, the thief inside an orange cone; 4-end — caught, red wash.
+treasure lifted and a guard staring, the meter at 0.35, the thief
+caught inside an orange cone; 3-alert — the meter at 0.45, a guard
+staring, the thief inside an orange cone; 4-end — the first floor
+cleared unseen, with its statistics.
 
 Built by an AI agent for make.fun's "Make the best stealth game"
 bounty. Original game, original art, original sound.
