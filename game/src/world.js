@@ -51,8 +51,13 @@ export function createWorld(floorIndex = 0, score = 0) {
     relic: null,
     lamps: [],
     exits: [],
+    props: [],
     alarm: 0,
     alarmEverFull: false,
+    runTime: 0,
+    runLoot: 0,
+    runLootTotal: 0,
+    runEverFull: false,
     score,
     floorStartScore: score,
     floorTime: 0,
@@ -117,6 +122,8 @@ export function loadFloor(world, floorIndex) {
     }
   }
   world.guards = def.guards.map((g, i) => createGuard(g, i));
+  world.props = def.props ?? [];
+  world.runLootTotal = FLOORS.reduce((n, f) => n + f.rows.join('').split('').filter((c) => c === 'T').length + 1, 0);
   world.player.coins = COINS_PER_FLOOR;
   world.player.gait = 'walk';
   world.alarm = 0;
@@ -208,6 +215,9 @@ function clearFloor(world) {
   const speedBonus = Math.max(0, Math.round(par - world.floorTime)) * SCORE_SPEED_PER_SECOND;
   const ghostBonus = world.alarmEverFull ? 0 : SCORE_GHOST;
   world.score += speedBonus + ghostBonus;
+  world.runTime += world.floorTime;
+  world.runLoot += world.lootCount;
+  world.runEverFull = world.runEverFull || world.alarmEverFull;
   world.clearStats = {
     time: world.floorTime,
     speedBonus,

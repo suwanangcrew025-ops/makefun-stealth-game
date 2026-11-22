@@ -11,7 +11,22 @@ export const FLOORS = [
   {
     name: 'Floor I — The Long Gallery',
     brief: 'Lift the Star of Vesper from the east room. The exit seals until you hold it.',
+    relicName: 'the Star of Vesper',
     par: 75,
+    // Dressing only: rugs, paintings, plants, a pedestal under the
+    // relic and vases. None of it blocks movement or sight.
+    props: [
+      { kind: 'rug', x: 15, y: 3, w: 5, h: 3 },
+      { kind: 'rug', x: 23, y: 10, w: 4, h: 2 },
+      { kind: 'painting', tx: 11, ty: 3 },
+      { kind: 'painting', tx: 21, ty: 5 },
+      { kind: 'painting', tx: 11, ty: 15 },
+      { kind: 'plant', tx: 1, ty: 1 },
+      { kind: 'plant', tx: 30, ty: 16 },
+      { kind: 'pedestal', tx: 26, ty: 2 },
+      { kind: 'vase', tx: 2, ty: 16 },
+      { kind: 'vase', tx: 29, ty: 1 },
+    ],
     rows: [
       '################################',
       '#..........#..........#........#',
@@ -41,7 +56,20 @@ export const FLOORS = [
   {
     name: 'Floor II — The Archive Stacks',
     brief: 'The Amber Codex sleeps between the stacks. Shelves hide you; the lamps do not.',
+    relicName: 'the Amber Codex',
     par: 110,
+    props: [
+      { kind: 'rug', x: 2, y: 2, w: 5, h: 3 },
+      { kind: 'rug', x: 24, y: 9, w: 5, h: 3 },
+      { kind: 'painting', tx: 5, ty: 7 },
+      { kind: 'painting', tx: 20, ty: 7 },
+      { kind: 'painting', tx: 10, ty: 13 },
+      { kind: 'plant', tx: 1, ty: 16 },
+      { kind: 'plant', tx: 30, ty: 2 },
+      { kind: 'pedestal', tx: 17, ty: 15 },
+      { kind: 'vase', tx: 30, ty: 16 },
+      { kind: 'vase', tx: 1, ty: 2 },
+    ],
     rows: [
       '################################',
       '#..............................#',
@@ -72,7 +100,20 @@ export const FLOORS = [
   {
     name: 'Floor III — The Vesper Vault',
     brief: 'The Heart of the Vesper, and every guard the museum has left. Earn the dark.',
+    relicName: 'the Heart of the Vesper',
     par: 140,
+    props: [
+      { kind: 'rug', x: 13, y: 11, w: 6, h: 3 },
+      { kind: 'rug', x: 2, y: 13, w: 5, h: 3 },
+      { kind: 'painting', tx: 11, ty: 2 },
+      { kind: 'painting', tx: 21, ty: 15 },
+      { kind: 'painting', tx: 11, ty: 12 },
+      { kind: 'plant', tx: 1, ty: 16 },
+      { kind: 'plant', tx: 30, ty: 1 },
+      { kind: 'pedestal', tx: 16, ty: 7 },
+      { kind: 'vase', tx: 2, ty: 1 },
+      { kind: 'vase', tx: 29, ty: 16 },
+    ],
     rows: [
       '################################',
       '#..........#..........#........#',

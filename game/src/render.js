@@ -44,16 +44,78 @@ function drawFloor(ctx, world) {
   }
 }
 
+function drawProps(ctx, world) {
+  for (const p of world.props) {
+    if (p.kind === 'rug') {
+      const x = p.x * TILE;
+      const y = p.y * TILE;
+      const w = p.w * TILE;
+      const h = p.h * TILE;
+      ctx.fillStyle = '#3d2436';
+      ctx.fillRect(x + 4, y + 4, w - 8, h - 8);
+      ctx.strokeStyle = '#8a6a3a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 8, y + 8, w - 16, h - 16);
+      ctx.strokeStyle = 'rgba(138, 106, 58, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 14, y + 14, w - 28, h - 28);
+    } else if (p.kind === 'painting') {
+      const x = p.tx * TILE;
+      const y = p.ty * TILE;
+      ctx.fillStyle = '#0e1424';
+      ctx.fillRect(x + 8, y + 9, 24, 22);
+      ctx.strokeStyle = '#c9a24d';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x + 8, y + 9, 24, 22);
+      ctx.fillStyle = '#7a5a34';
+      ctx.beginPath();
+      ctx.arc(x + 20, y + 20, 5, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.kind === 'plant') {
+      const c = tileCenter(p.tx, p.ty);
+      ctx.fillStyle = '#5d4325';
+      ctx.fillRect(c.x - 8, c.y + 2, 16, 12);
+      ctx.fillStyle = '#2f6b3a';
+      ctx.beginPath();
+      ctx.arc(c.x - 5, c.y - 4, 6, 0, Math.PI * 2);
+      ctx.arc(c.x + 5, c.y - 6, 6, 0, Math.PI * 2);
+      ctx.arc(c.x, c.y - 10, 6, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.kind === 'pedestal') {
+      const c = tileCenter(p.tx, p.ty);
+      ctx.fillStyle = '#4d5878';
+      ctx.fillRect(c.x - 13, c.y - 4, 26, 18);
+      ctx.fillStyle = '#39415e';
+      ctx.fillRect(c.x - 16, c.y + 12, 32, 5);
+      ctx.strokeStyle = '#6b7a9e';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(c.x - 13, c.y - 4, 26, 18);
+    } else if (p.kind === 'vase') {
+      const c = tileCenter(p.tx, p.ty);
+      ctx.fillStyle = '#c9a24d';
+      ctx.beginPath();
+      ctx.moveTo(c.x - 6, c.y - 8);
+      ctx.lineTo(c.x + 6, c.y - 8);
+      ctx.lineTo(c.x + 4, c.y + 8);
+      ctx.lineTo(c.x - 4, c.y + 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#8a6a3a';
+      ctx.fillRect(c.x - 2, c.y - 12, 4, 5);
+    }
+  }
+}
+
 function drawLampPools(ctx, world) {
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   for (const lamp of world.lamps) {
-    const g = ctx.createRadialGradient(lamp.x, lamp.y, 8, lamp.x, lamp.y, 118);
-    g.addColorStop(0, 'rgba(255, 205, 110, 0.20)');
+    const g = ctx.createRadialGradient(lamp.x, lamp.y, 8, lamp.x, lamp.y, 128);
+    g.addColorStop(0, 'rgba(255, 205, 110, 0.30)');
     g.addColorStop(1, 'rgba(255, 205, 110, 0)');
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(lamp.x, lamp.y, 118, 0, Math.PI * 2);
+    ctx.arc(lamp.x, lamp.y, 128, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -62,10 +124,14 @@ function drawLampPools(ctx, world) {
     ctx.beginPath();
     ctx.arc(lamp.x, lamp.y, 5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(255, 215, 122, 0.5)';
+    ctx.strokeStyle = 'rgba(255, 215, 122, 0.7)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(lamp.x, lamp.y, 9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255, 215, 122, 0.35)';
+    ctx.beginPath();
+    ctx.arc(lamp.x, lamp.y, 16, 0, Math.PI * 2);
     ctx.stroke();
   }
 }
@@ -205,6 +271,11 @@ function drawActors(ctx, world) {
   if (showPlayer) {
     const p = world.player;
     const r = p.gait === 'sneak' ? 10 : 12;
+    // A soft shadow grounds the thief on the floor.
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    ctx.beginPath();
+    ctx.ellipse(p.x + 2, p.y + r - 2, r + 2, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
     if (p.gait === 'sprint') {
       ctx.save();
       ctx.setLineDash([6, 6]);
@@ -233,22 +304,34 @@ function drawActors(ctx, world) {
 function drawHud(ctx, world) {
   const word = alarmWord(world);
   const alarm = world.alarm;
-  ctx.fillStyle = 'rgba(6, 10, 24, 0.72)';
+  ctx.fillStyle = 'rgba(6, 10, 24, 0.78)';
   ctx.fillRect(0, 0, VIEW_W, 46);
+  ctx.textBaseline = 'middle';
+
+  // Floor, and the job for this floor.
   ctx.fillStyle = PALETTE.hud;
   ctx.font = 'bold 17px sans-serif';
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(world.floor.name, 16, 24);
+  ctx.fillText(`${world.floor.name} · ${world.floorIndex + 1}/3`, 16, 24);
+  const objective = world.exitOpen
+    ? '◆ Relic secured — reach the EXIT'
+    : `◆ Lift ${world.floor.relicName}`;
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = world.exitOpen ? '#7fd08a' : '#ffd77a';
+  ctx.fillText(objective, 340, 24);
+
+  // Loot, relic, coins, score and the clock, right-aligned to the eye.
+  const relicHeld = world.relic && world.relic.taken ? 1 : 0;
+  const mins = Math.floor(world.floorTime / 60);
+  const secs = Math.floor(world.floorTime % 60);
+  const stats = `Loot ${world.lootCount}/${world.lootTotal}  ·  ◆ ${relicHeld}/1  ·  Coins ${world.player.coins}  ·  Score ${world.score}  ·  ${mins}:${String(secs).padStart(2, '0')}`;
   ctx.font = '15px sans-serif';
   ctx.fillStyle = PALETTE.hudDim;
-  const loot = `Loot ${world.lootCount}/${world.lootTotal}`;
-  const coins = `Coins ${world.player.coins}`;
-  const score = `Score ${world.score}`;
-  ctx.fillText(`${loot}    ${coins}    ${score}`, 330, 24);
+  ctx.textAlign = 'right';
+  const ex = VIEW_W - 190;
+  ctx.fillText(stats, ex - 44, 24);
 
   // The alarm eye: it opens and reddens as the meter fills.
-  const ex = VIEW_W - 190;
   const ey = 23;
   const openness = 0.25 + 0.75 * alarm;
   ctx.strokeStyle = alarm >= 0.68 ? PALETTE.danger : PALETTE.hud;
@@ -266,12 +349,35 @@ function drawHud(ctx, world) {
   ctx.font = 'bold 16px sans-serif';
   ctx.textAlign = 'left';
   ctx.fillText(word.toUpperCase(), ex + 36, ey + 1);
+  const wordW = ctx.measureText(word.toUpperCase()).width;
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = PALETTE.hudDim;
+  ctx.fillText(`${Math.round(alarm * 100)}%`, ex + 44 + wordW, ey + 1);
 
   // A thin alarm bar under the header.
   ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
   ctx.fillRect(0, 46, VIEW_W, 4);
   ctx.fillStyle = alarm >= 0.68 ? PALETTE.danger : alarm >= 0.32 ? '#ffb347' : '#7fd08a';
   ctx.fillRect(0, 46, VIEW_W * alarm, 4);
+
+  // The objective banner, pinned to the bottom while playing: the job,
+  // the exit state, and whether the ghost bonus is still alive.
+  if (world.screen === 'play') {
+    const ghost = world.alarmEverFull ? 'Ghost lost' : 'Ghost ✓';
+    const banner = world.exitOpen
+      ? `OBJECTIVE — Relic secured · Reach the EXIT · ${ghost}`
+      : `OBJECTIVE — Lift ${world.floor.relicName} · Exit sealed · ${ghost}`;
+    ctx.font = '14px sans-serif';
+    const bw = ctx.measureText(banner).width + 24;
+    ctx.fillStyle = 'rgba(6, 10, 24, 0.78)';
+    ctx.fillRect(12, VIEW_H - 36, bw, 26);
+    ctx.strokeStyle = world.exitOpen ? '#7fd08a' : '#c9a24d';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(12, VIEW_H - 36, bw, 26);
+    ctx.fillStyle = world.exitOpen ? '#7fd08a' : '#ffd77a';
+    ctx.textAlign = 'left';
+    ctx.fillText(banner, 24, VIEW_H - 22);
+  }
 }
 
 function panel(ctx, title, lines, accent) {
@@ -299,25 +405,45 @@ function panel(ctx, title, lines, accent) {
 function drawOverlay(ctx, world) {
   const s = world.screen;
   if (s === 'title') {
-    ctx.fillStyle = 'rgba(4, 8, 20, 0.66)';
+    ctx.fillStyle = 'rgba(4, 8, 20, 0.55)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+    // A framed panel behind the title so the words read over the patrol.
+    ctx.fillStyle = 'rgba(6, 10, 24, 0.72)';
+    ctx.fillRect(220, 140, 840, 400);
+    ctx.strokeStyle = '#c9a24d';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(220, 140, 840, 400);
+    ctx.strokeStyle = 'rgba(201, 162, 77, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(228, 148, 824, 384);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#c9a24d';
+    ctx.font = 'bold 17px sans-serif';
+    ctx.fillText('— TONIGHT’S JOB · THE VESPER MUSEUM —', VIEW_W / 2, 188);
     ctx.fillStyle = '#f2ead2';
     ctx.font = 'bold 84px serif';
-    ctx.fillText('VESPER VAULT', VIEW_W / 2, 250);
+    ctx.fillText('VESPER VAULT', VIEW_W / 2, 258);
+    ctx.fillStyle = '#c9a24d';
+    ctx.fillRect(VIEW_W / 2 - 180, 306, 360, 2);
+    ctx.fillStyle = '#ffd94d';
+    ctx.save();
+    ctx.translate(VIEW_W / 2, 340);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-7, -7, 14, 14);
+    ctx.restore();
     ctx.fillStyle = PALETTE.hud;
     ctx.font = '22px serif';
-    ctx.fillText('Slip past the cones. Lift the relic. Vanish.', VIEW_W / 2, 316);
+    ctx.fillText('Slip past the cones. Lift the relic. Vanish.', VIEW_W / 2, 382);
     ctx.font = '18px sans-serif';
     ctx.fillStyle = PALETTE.hudDim;
-    ctx.fillText('A stealth game in three floors — Wren, thief of the Vesper Museum', VIEW_W / 2, 356);
+    ctx.fillText('3 FLOORS · 3 RELICS · 1 THIEF — Wren, thief of the Vesper Museum', VIEW_W / 2, 420);
     ctx.fillStyle = '#ffd77a';
     ctx.font = 'bold 22px sans-serif';
-    ctx.fillText('Press Enter to begin', VIEW_W / 2, 430);
+    ctx.fillText('Press Enter to begin', VIEW_W / 2, 472);
     ctx.fillStyle = PALETTE.hudDim;
     ctx.font = '15px sans-serif';
-    ctx.fillText('WASD / arrows move · C sneak · Shift sprint · Click tosses a coin · P pause · R retry · M mute', VIEW_W / 2, 480);
+    ctx.fillText('WASD / arrows move · C sneak · Shift sprint · Click tosses a coin · P pause · R retry · M mute', VIEW_W / 2, 512);
   } else if (s === 'brief') {
     ctx.fillStyle = 'rgba(4, 8, 20, 0.72)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
@@ -325,7 +451,12 @@ function drawOverlay(ctx, world) {
   } else if (s === 'caught') {
     ctx.fillStyle = 'rgba(160, 10, 10, 0.30)';
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
-    panel(ctx, 'CAUGHT', ['The guards close in and the night is over — for this floor.', 'Press R to retry the floor, unseen.', ''], PALETTE.danger);
+    panel(ctx, 'CAUGHT', [
+      'The guards close in and the night is over — for this floor.',
+      `Loot ${world.lootCount}/${world.lootTotal} · Score ${world.score} · ${world.floorTime.toFixed(1)}s on this floor.`,
+      'Press R to retry the floor, unseen.',
+      '',
+    ], PALETTE.danger);
   } else if (s === 'clear') {
     const st = world.clearStats;
     const lines = [
@@ -336,9 +467,12 @@ function drawOverlay(ctx, world) {
     ];
     panel(ctx, 'FLOOR CLEAR', lines, '#7fd08a');
   } else if (s === 'victory') {
+    const ghostLine = world.runEverFull
+      ? 'One floor raised the alarm — the ghost bonus slipped away.'
+      : 'Three floors, three relics, and not a single alarm that mattered.';
     panel(ctx, 'THE VESPER IS YOURS', [
-      'Three floors, three relics, and not a single alarm that mattered.',
-      `Final score ${world.score}.`,
+      ghostLine,
+      `Final score ${world.score} · ${world.runTime.toFixed(1)}s in the dark · Loot ${world.runLoot}/${world.runLootTotal}.`,
       '',
       'Press Enter to play again.',
     ], '#ffd77a');
@@ -352,6 +486,7 @@ function drawOverlay(ctx, world) {
 export function drawWorld(ctx, world) {
   ctx.clearRect(0, 0, VIEW_W, VIEW_H);
   drawFloor(ctx, world);
+  drawProps(ctx, world);
   drawLampPools(ctx, world);
   drawExit(ctx, world);
   drawLoot(ctx, world);

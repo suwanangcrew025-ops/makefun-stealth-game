@@ -5,7 +5,7 @@
 // and the shot-ready flag.
 
 import { STEP, VIEW_H, VIEW_W } from './config.js';
-import { attachInput, clearMenuEdges, createInput, inputForWorld } from './input.js';
+import { attachInput, createInput, inputForWorld } from './input.js';
 import { advanceMenu, createWorld, resetFloor, stepWorld } from './world.js';
 import { drawWorld } from './render.js';
 import { createAudio, playSounds, toggleMute, unlockAudio, updateAudioBed } from './audio.js';
@@ -31,6 +31,8 @@ function syncStatus(world) {
 }
 
 function handleMenuKeys(world) {
+  // Each edge is cleared right where it is consumed, so a press that
+  // lands in a frame with no fixed step is never wiped unhandled.
   if (input.menuPressed) {
     advanceMenu(world);
     input.menuPressed = false;
@@ -78,10 +80,9 @@ if (shotName) {
       steps += 1;
     }
     if (steps === 5) accumulator = 0;
-    // Menu edges are cleared here, after the world step — and the coin
-    // target is never cleared here at all: the world clears it itself
-    // once it has consumed the throw.
-    clearMenuEdges(input);
+    // Menu edges are cleared where they are consumed, inside
+    // handleMenuKeys — the coin target is never cleared here at all:
+    // the world clears it itself once it has consumed the throw.
     playSounds(audio, world.sounds.splice(0));
     updateAudioBed(audio, world, elapsed);
     drawWorld(ctx, world);

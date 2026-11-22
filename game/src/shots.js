@@ -17,35 +17,12 @@ function stageCover() {
   return { world, state: shotState(world) };
 }
 
-// The pilot sneaks down the west chamber's shadow side, lifts the
-// south-west treasure and settles crouched beside the crates.
+// The pilot lifts the south-west treasure, then slips to the middle
+// guard's column and stands at its edge until the guard has stopped
+// and is staring at the thief with the meter at 0.35 — a near miss:
+// the '?' is up, the cone is orange, the thief is inside it, and the
+// loot is already 1/4.
 function stagePlay() {
-  const world = createWorld(0);
-  advanceMenu(world);
-  advanceMenu(world);
-  const pilot = createPilot(
-    [[2, 2], [2, 13], [6, 14], [7, 15], [4, 14]],
-    { gait: 'auto', sneakRadius: 210, dwellSteps: 90 },
-  );
-  let steps = 0;
-  while (!pilot.done && steps < 12000) {
-    stepWorld(world, updatePilot(pilot, world, STEP), STEP);
-    steps += 1;
-  }
-  return { world, state: shotState(world), steps };
-}
-
-// The pilot walks the south side of the gallery to one tile east of
-// the middle guard's column and stands there. It crosses the west
-// chamber on row 14, in the dark, slips through the west partition's
-// row-13 door gap, and waits at (12,14) until the middle guard is up
-// at the north end of its beat, so the crossing of its column happens
-// while the guard is far away. It steers on centrelines (lanes), so it
-// never cuts a diagonal across a crate corner. Then it stands at
-// (17,12) until a guard has stopped and is staring at the thief with
-// the meter at 0.45 — and only then is the meter pinned at exactly
-// 0.45 for the frame.
-function stageAlert() {
   const world = createWorld(0);
   advanceMenu(world);
   advanceMenu(world);
@@ -54,7 +31,53 @@ function stageAlert() {
     return w.floorTime > 10 && Math.floor(g.y / 40) <= 4 && g.mood === 'patrol';
   };
   const pilot = createPilot(
-    [[2, 2], [2, 14], [10, 14], [10, 13], [12, 13], [12, 14, guardNorth], [17, 14], [17, 12]],
+    [[2, 2], [2, 13], [6, 14], [7, 15], [4, 14], [10, 14], [10, 13], [12, 13], [12, 14, guardNorth], [17, 14], [17, 12]],
+    { gait: 'walk', lanes: true },
+  );
+  let steps = 0;
+  while (!pilot.done && steps < 12000) {
+    stepWorld(world, updatePilot(pilot, world, STEP), STEP);
+    steps += 1;
+    if (world.screen === 'caught') return { world, state: shotState(world), steps, failed: 'caught en route' };
+  }
+  // Wait for the near miss itself: a suspect guard staring at the
+  // thief, the thief inside its cone, the meter at 0.35.
+  const staged = (w) => {
+    if (w.alarm < 0.35 || w.screen !== 'play') return false;
+    for (const g of w.guards) {
+      if (g.mood === 'suspect' && visionRate(g, w) > 0) return true;
+    }
+    return false;
+  };
+  while (!staged(world) && steps < 12000) {
+    stepWorld(world, IDLE, STEP);
+    steps += 1;
+    if (world.screen === 'caught') return { world, state: shotState(world), steps, failed: 'caught while waiting' };
+    if (world.alarm >= 1.0) return { world, state: shotState(world), steps, failed: 'alarm hit 1.0 while waiting' };
+  }
+  if (!staged(world)) return { world, state: shotState(world), steps, failed: 'staged moment never arrived' };
+  world.alarm = 0.35;
+  return { world, state: shotState(world), steps };
+}
+
+// The pilot walks the east room to one tile west of the east guard's
+// column and stands there, in the lamp light by the relic. It crosses
+// the west chamber on row 2, drops down column 10, and waits at (12,8)
+// until the middle guard is at its south end, so the crossing of its
+// column happens while the guard is far away. Then it stands at (28,5)
+// until a guard has stopped and is staring at the thief with the
+// meter at 0.45 — and only then is the meter pinned at exactly 0.45
+// for the frame.
+function stageAlert() {
+  const world = createWorld(0);
+  advanceMenu(world);
+  advanceMenu(world);
+  const guardSouth = (w) => {
+    const g = w.guards[1];
+    return Math.floor(g.y / 40) >= 13 && g.mood === 'patrol';
+  };
+  const pilot = createPilot(
+    [[2, 2], [10, 2], [10, 8], [12, 8, guardSouth], [22, 8], [23, 8], [23, 3], [26, 3], [28, 3], [28, 5]],
     { gait: 'walk', lanes: true },
   );
   let steps = 0;
@@ -83,26 +106,36 @@ function stageAlert() {
   return { world, state: shotState(world), steps };
 }
 
-// The pilot sprints the corridor and stands in the middle column
-// patrol's road until a guard catches them.
+// The pilot walks the whole first floor: down the west chamber,
+// across the middle at row 8 while the middle guard is at its south
+// end, up the east room to lift the Star of Vesper, then back down
+// and out the east exit while the east guard is at its south end —
+// and the frame is the FLOOR CLEAR panel with its statistics.
 function stageEnd() {
   const world = createWorld(0);
   advanceMenu(world);
   advanceMenu(world);
+  const guardSouth = (index) => (w) => {
+    const g = w.guards[index];
+    return Math.floor(g.y / 40) >= 13 && g.mood === 'patrol';
+  };
   const pilot = createPilot(
-    [[2, 2], [2, 8], [16, 8], [16, 10]],
-    { gait: 'sprint' },
+    [[2, 2], [10, 2], [10, 8], [12, 8, guardSouth(1)], [22, 8], [23, 8], [23, 3], [26, 3], [26, 2], [26, 3], [23, 3], [23, 8, guardSouth(2)], [30, 8]],
+    { gait: 'walk', lanes: true },
   );
   let steps = 0;
   while (!pilot.done && steps < 12000) {
     stepWorld(world, updatePilot(pilot, world, STEP), STEP);
     steps += 1;
-    if (world.screen === 'caught') return { world, state: shotState(world), steps };
+    if (world.screen === 'caught') return { world, state: shotState(world), steps, failed: 'caught en route' };
+    if (world.screen === 'clear') return { world, state: shotState(world), steps };
   }
-  while (world.screen !== 'caught' && steps < 12000) {
+  while (world.screen !== 'clear' && steps < 12000) {
     stepWorld(world, IDLE, STEP);
     steps += 1;
+    if (world.screen === 'caught') return { world, state: shotState(world), steps, failed: 'caught after the route' };
   }
+  if (world.screen !== 'clear') return { world, state: shotState(world), steps, failed: 'floor never cleared' };
   return { world, state: shotState(world), steps };
 }
 
